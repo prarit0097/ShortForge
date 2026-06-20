@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' file: data:; media-src 'self' file:; style-src 'self' 'unsafe-inline';" />
+  <title>ShortForge</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SF</div>
+        <div class="brand-text">
+          <strong>ShortForge</strong>
+          <span>scene-by-scene shorts</span>
+        </div>
+      </div>
+
+      <nav class="steps" id="stepNav">
+        <div class="step" data-step="1"><span class="dot">1</span> Import</div>
+        <div class="step" data-step="2"><span class="dot">2</span> Settings</div>
+        <div class="step" data-step="3"><span class="dot">3</span> Analyze</div>
+        <div class="step" data-step="4"><span class="dot">4</span> Process</div>
+        <div class="step" data-step="5"><span class="dot">5</span> Download</div>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button class="ai-toggle" id="aiToggle" title="Toggle the OpenRouter AI layer">
+          <span class="ai-led"></span>
+          <span class="ai-label">AI Layer</span>
+          <span class="ai-state" id="aiState">OFF</span>
+        </button>
+        <button class="ghost-btn" id="openSettings">⚙ Settings</button>
+        <div class="hw-badge" id="hwBadge">encoder: detecting…</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Import a video or movie</h1>
+          <p class="sub" id="pageSub">Drop a file or browse. Supports 1–10 GB files. Everything stays on your PC.</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="primary-btn" id="addVideoBtn">＋ Add Video</button>
+        </div>
+      </header>
+
+      <section class="content" id="content">
+
+        <!-- 1. Import / dropzone -->
+        <div class="panel" id="importPanel">
+          <div class="dropzone" id="dropzone">
+            <div class="dz-icon">🎬</div>
+            <h2>Drop your video or movie here</h2>
+            <p>or click <span class="link">Add Video</span> · MP4, MKV, MOV, AVI, WEBM…</p>
+          </div>
+          <div class="file-card hidden" id="fileCard">
+            <div class="thumb-fallback" id="fileThumb">🎞️</div>
+            <div class="file-meta">
+              <strong id="fileName">—</strong>
+              <div class="meta-row" id="fileStats"></div>
+            </div>
+            <button class="ghost-btn" id="changeFile">Change</button>
+          </div>
+        </div>
+
+        <!-- 2. Settings / controls -->
+        <div class="panel hidden" id="controlsPanel">
+          <h3 class="panel-title">Cutting settings</h3>
+          <div class="grid">
+            <label class="field">
+              <span>Target length (sec)</span>
+              <input type="number" id="targetLen" min="3" max="600" value="30" />
+            </label>
+            <label class="field">
+              <span>Min (sec)</span>
+              <input type="number" id="minLen" min="2" max="600" value="20" />
+            </label>
+            <label class="field">
+              <span>Max (sec)</span>
+              <input type="number" id="maxLen" min="3" max="600" value="50" />
+            </label>
+            <label class="field">
+              <span>Output ratio</span>
+              <select id="aspectRatio"></select>
+            </label>
+            <label class="field">
+              <span>Reframe</span>
+              <select id="reframeMode"></select>
+            </label>
+            <label class="field">
+              <span>Scene scan</span>
+              <select id="scanMode">
+                <option value="accurate">Accurate (scene detect)</option>
+                <option value="fast">Fast (keyframes — huge files)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Scene sensitivity <em id="threshVal">0.40</em></span>
+              <input type="range" id="sceneThreshold" min="0.15" max="0.6" step="0.05" value="0.4" />
+            </label>
+            <label class="field checkbox">
+              <input type="checkbox" id="burnTitle" checked />
+              <span>Burn AI hook title (when AI on)</span>
+            </label>
+            <label class="field checkbox">
+              <input type="checkbox" id="burnCaptions" />
+              <span>Burn AI captions (needs AI + Whisper)</span>
+            </label>
+          </div>
+          <div class="panel-actions">
+            <button class="primary-btn" id="analyzeBtn">Analyze video →</button>
+            <span class="hint" id="analyzeHint">We’ll detect scenes and show how many shorts you’ll get before cutting.</span>
+          </div>
+        </div>
+
+        <!-- 3/4. Results -->
+        <div class="panel hidden" id="resultsPanel">
+          <div class="results-head">
+            <div class="summary" id="summary"></div>
+            <div class="bulk-actions">
+              <button class="chip" id="selectAll">Select all</button>
+              <button class="chip" id="selectNone">None</button>
+              <button class="chip" id="selectTop">Top 10 by score</button>
+              <button class="chip" id="enrichBtn" title="Analyze every clip with AI">✨ Enhance with AI</button>
+            </div>
+          </div>
+          <div class="clip-grid" id="clipGrid"></div>
+          <div class="panel-actions sticky-actions">
+            <button class="primary-btn big" id="processBtn">▶ Start processing (<span id="selCount">0</span> shorts)</button>
+            <button class="success-btn big hidden" id="downloadBtn">⬇ Batch download selected</button>
+          </div>
+        </div>
+
+      </section>
+    </main>
+  </div>
+
+  <!-- Progress overlay -->
+  <div class="overlay hidden" id="progressOverlay">
+    <div class="progress-card">
+      <h3 id="progTitle">Working…</h3>
+      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+      <p class="prog-msg" id="progMsg">Starting…</p>
+      <button class="ghost-btn danger" id="cancelBtn">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="overlay hidden" id="settingsModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Settings — AI &amp; Performance</h3>
+        <button class="icon-btn" id="closeSettings">✕</button>
+      </div>
+      <div class="modal-body">
+        <section class="set-section">
+          <h4>OpenRouter AI</h4>
+          <label class="field">
+            <span>API key <a class="link" id="orLink">(get one at openrouter.ai)</a></span>
+            <div class="key-row">
+              <input type="password" id="apiKey" placeholder="sk-or-..." />
+              <button class="ghost-btn" id="saveKey">Save</button>
+              <button class="ghost-btn" id="testKey">Test</button>
+            </div>
+            <em class="key-status" id="keyStatus"></em>
+          </label>
+          <div class="model-head">
+            <span>Models</span>
+            <button class="ghost-btn small" id="loadModels" type="button">🔄 Load models &amp; prices</button>
+            <em class="model-status" id="modelStatus"></em>
+          </div>
+          <div class="grid two">
+            <label class="field">
+              <span>Vision model (scene understanding)</span>
+              <select id="aiModelVision"></select>
+              <em class="rec-hint" id="visionRec"></em>
+            </label>
+            <label class="field">
+              <span>Text model (titles / captions)</span>
+              <select id="aiModelText"></select>
+              <em class="rec-hint" id="textRec"></em>
+            </label>
+          </div>
+          <label class="field">
+            <span>Whisper model (transcript) <em id="whisperState"></em></span>
+            <select id="whisperModel">
+              <option value="tiny">tiny — multilingual, fastest</option>
+              <option value="base">base — multilingual, balanced</option>
+              <option value="small">small — multilingual, accurate</option>
+              <option value="medium">medium — multilingual, best (slow)</option>
+              <option value="tiny.en">tiny.en — English only</option>
+              <option value="base.en">base.en — English only</option>
+              <option value="small.en">small.en — English only</option>
+            </select>
+          </label>
+        </section>
+        <section class="set-section">
+          <h4>Performance</h4>
+          <div class="grid two">
+            <label class="field">
+              <span>Hardware encoder</span>
+              <select id="hwAccel">
+                <option value="auto">Auto (fastest available)</option>
+                <option value="nvenc">NVIDIA NVENC</option>
+                <option value="qsv">Intel QuickSync</option>
+                <option value="amf">AMD AMF</option>
+                <option value="cpu">CPU (libx264)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Parallel exports</span>
+              <input type="number" id="exportConcurrency" min="1" max="8" value="2" />
+            </label>
+          </div>
+        </section>
+      </div>
+      <div class="modal-foot">
+        <button class="primary-btn" id="saveSettings">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

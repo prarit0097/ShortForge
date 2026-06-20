@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+# Whisper model files (downloaded on demand)
+**/ggml-*.bin
+# Local working/output folders
+.shortforge-work/

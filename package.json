@@ -1,0 +1,48 @@
+{
+  "name": "shortforge",
+  "productName": "ShortForge",
+  "version": "1.0.3",
+  "description": "Lightweight Windows desktop app that cuts long videos/movies into scene-by-scene shorts with an optional OpenRouter AI layer.",
+  "main": "src/main/main.js",
+  "author": "ShortForge",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "optionalDependencies": {
+    "nodejs-whisper": "^0.2.9"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.shortforge.app",
+    "productName": "ShortForge",
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/ffprobe-static/**",
+      "**/node_modules/nodejs-whisper/**"
+    ],
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
+  }
+}
