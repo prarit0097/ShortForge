@@ -16,9 +16,9 @@ const ASPECT_OPTIONS = {
   original: 'Original — no reframe',
 };
 const REFRAME_OPTIONS = {
-  blur: 'Blurred pad (nothing cropped)',
-  crop: 'Center crop (fills frame)',
-  smart: 'AI smart crop (subject tracking)',
+  crop: 'Fill screen — crop sides (full screen)',
+  smart: 'AI smart fill — keep subject (needs AI)',
+  blur: 'Blurred pad — full scene with bars',
 };
 
 const state = {

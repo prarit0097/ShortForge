@@ -1,7 +1,7 @@
 {
   "name": "shortforge",
   "productName": "ShortForge",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Lightweight Windows desktop app that cuts long videos/movies into scene-by-scene shorts with an optional OpenRouter AI layer.",
   "main": "src/main/main.js",
   "author": "ShortForge",

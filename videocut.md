@@ -77,7 +77,8 @@ ShortForge was built to solve exactly this:
 - **Full-coverage, scene-aware cutting** — splits the entire video into consecutive shorts of
   your target length, snapped to real scene boundaries. No gaps, no overlaps, nothing skipped.
 - **Output ratio dropdown** — 9:16, 16:9, 1:1, 4:5, or original.
-- **Reframing** — blurred-pad (nothing cropped), center crop, or AI smart crop.
+- **Reframing** — **Fill screen** (crop sides, full-screen — the default), AI smart fill
+  (keeps the subject), or Blurred pad (shows the whole scene with blurred bars).
 - **Hardware-accelerated encoding** — auto-detects NVIDIA NVENC / Intel QuickSync / AMD AMF,
   falls back to CPU (libx264).
 - **Live progress + cancel** for every stage.
@@ -139,6 +140,8 @@ reframe (blur pad / center crop / smart crop)
    → burned captions (subtitles)                 [only when "Burn captions" is on]
 ```
 
+- **Fill screen** (default) scales the scene to *cover* the whole output frame and crops the
+  overflowing sides — a true full-screen short with no bars.
 - **Blur pad** blurs a *downscaled* copy of the frame and upscales it (≈5× faster than
   blurring the full-size frame, visually identical background).
 - Cuts use **input seeking before `-i` with re-encode**, which is both fast and
@@ -305,7 +308,8 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 **Cutting settings (main screen):**
 - **Target / Min / Max length** — desired clip length and the allowed band.
 - **Output ratio** — 9:16 / 16:9 / 1:1 / 4:5 / original.
-- **Reframe** — Blur pad (nothing cropped) / Center crop / AI smart crop.
+- **Reframe** — **Fill screen** (crop sides, full-screen — default) / AI smart fill (keeps
+  subject, needs AI) / Blurred pad (whole scene with bars).
 - **Scene scan** — Accurate (ffmpeg scene detect) or Fast (keyframes, for huge files).
 - **Scene sensitivity** — 0.15 (more cuts) … 0.6 (only hard cuts). Default 0.40.
 - **Burn AI hook title** — overlay the AI title on each clip (AI on). Default on.
@@ -386,6 +390,7 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 | **1.0.1** | **Bug fix:** dead UI — a top-level `const api` collided with the contextBridge global, crashing the renderer; wrapped the renderer in an IIFE and removed CSP-blocked inline handlers. |
 | **1.0.2** | **Performance:** optimized blur (downscale→blur→upscale, ≈5×), added live within-clip progress (`-progress pipe:1`), parallel cutting (2 concurrent), cancel-aware. |
 | **1.0.3** | **AI model picker** with live OpenRouter pricing, cheapest-first, ⭐ curated recommendation (filters out dynamic-priced routers and unreliable free models). **AI now visibly changes output:** burns the AI hook title onto clips, auto-enhances before processing, multilingual Whisper default. |
+| **1.0.4** | **Full-screen shorts by default** — default reframe changed from blurred-pad to **Fill screen** (crop sides), so 9:16 clips fill the whole frame with no blur bars. Reframe options relabelled/reordered; one-time settings migration moves existing installs off the old blur default. |
 
 ---
 

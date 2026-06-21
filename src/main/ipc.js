@@ -79,6 +79,7 @@ async function pool(items, limit, fn) {
 
 function registerIpc(winGetter) {
   getWin = winGetter;
+  settingsStore.migrate(); // one-time: old blur default → full-screen fill
 
   // ---- Pickers ---------------------------------------------------------------
   ipcMain.handle('dialog:pickVideos', async () => {

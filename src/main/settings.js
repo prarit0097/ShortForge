@@ -22,6 +22,28 @@ function load() {
   }
 }
 
+/**
+ * One-time migration: move existing installs off the old blurred-pad default to the
+ * new full-screen fill. Runs once (guarded by _fsMigration), then never overrides
+ * the user's choice again. Fresh installs already default to 'crop'.
+ */
+function migrate() {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(SETTINGS_FILE(), 'utf8'));
+  } catch (_) {
+    return; // no saved settings yet → defaults apply (crop)
+  }
+  if (raw._fsMigration) return;
+  const next = { ...raw, _fsMigration: true };
+  if (!raw.reframeMode || raw.reframeMode === 'blur') next.reframeMode = 'crop';
+  try {
+    fs.writeFileSync(SETTINGS_FILE(), JSON.stringify(next, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[settings] migrate failed:', err.message);
+  }
+}
+
 function save(partial) {
   const next = { ...load(), ...partial };
   // Never persist the raw key inside settings.json.
@@ -74,4 +96,4 @@ function hasApiKey() {
   return !!getApiKey();
 }
 
-module.exports = { load, save, setApiKey, getApiKey, hasApiKey };
+module.exports = { load, save, migrate, setApiKey, getApiKey, hasApiKey };

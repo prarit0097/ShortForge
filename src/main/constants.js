@@ -11,9 +11,9 @@ const ASPECT_RATIOS = {
 };
 
 const REFRAME_MODES = {
-  blur: 'Blurred background pad (nothing cropped)',
-  crop: 'Center crop (fills frame, edges cut)',
-  smart: 'AI smart crop (subject tracking — needs AI)',
+  crop: 'Fill screen — crop sides (full screen)',
+  smart: 'AI smart fill — keep subject in frame (needs AI)',
+  blur: 'Blurred pad — show full scene with bars',
 };
 
 const DEFAULTS = {
@@ -22,7 +22,7 @@ const DEFAULTS = {
   maxLengthSec: 50,
   sceneThreshold: 0.4, // 0.3 sensitive, 0.4 default, 0.5 only hard cuts
   aspectRatio: '9:16',
-  reframeMode: 'blur',
+  reframeMode: 'crop', // full-screen fill by default; 'blur' keeps the whole scene with bars
   aiEnabled: false,
   hwAccel: 'auto', // auto | nvenc | qsv | amf | cpu
   exportConcurrency: 2,
