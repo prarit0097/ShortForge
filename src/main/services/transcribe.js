@@ -25,8 +25,26 @@ function loadWhisper() {
   return whisperMod;
 }
 
+/** The npm module can load while the compiled whisper.cpp binary is absent — check both. */
+function whisperBinaryExists() {
+  try {
+    const pkgDir = path.dirname(require.resolve('nodejs-whisper/package.json'));
+    const rel = [
+      'cpp/whisper.cpp/build/bin/Release/whisper-cli.exe',
+      'cpp/whisper.cpp/build/bin/Release/main.exe',
+      'cpp/whisper.cpp/build/bin/whisper-cli.exe',
+      'cpp/whisper.cpp/build/bin/whisper-cli',
+      'cpp/whisper.cpp/main.exe',
+      'cpp/whisper.cpp/main',
+    ];
+    return rel.some((r) => fs.existsSync(path.join(pkgDir, r)));
+  } catch (_) {
+    return false;
+  }
+}
+
 function isAvailable() {
-  return !!loadWhisper();
+  return !!loadWhisper() && whisperBinaryExists();
 }
 
 /** Extract 16kHz mono WAV (what whisper.cpp expects). */
@@ -44,7 +62,7 @@ async function extractAudio(filePath, jobId) {
  * whisper is unavailable. Errors are swallowed into an empty transcript so the
  * pipeline degrades gracefully.
  */
-async function transcribe(filePath, { model = 'base.en', jobId } = {}) {
+async function transcribe(filePath, { model = 'base', jobId } = {}) {
   const mod = loadWhisper();
   if (!mod) return { available: false, segments: [] };
 

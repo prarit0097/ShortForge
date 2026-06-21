@@ -79,6 +79,9 @@ ShortForge was built to solve exactly this:
 - **Output ratio dropdown** — 9:16, 16:9, 1:1, 4:5, or original.
 - **Reframing** — **Fill screen** (crop sides, full-screen — the default), AI smart fill
   (keeps the subject), or Blurred pad (shows the whole scene with blurred bars).
+- **Output quality** — High (near-original, default), Balanced, or Max. All output is
+  forced to `yuv420p` so clips are accepted by every social platform. Lanczos scaling.
+- **Enhance** (optional) — light denoise + sharpen + subtle colour pop for a crisper look.
 - **Hardware-accelerated encoding** — auto-detects NVIDIA NVENC / Intel QuickSync / AMD AMF,
   falls back to CPU (libx264).
 - **Live progress + cancel** for every stage.
@@ -312,6 +315,8 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
   subject, needs AI) / Blurred pad (whole scene with bars).
 - **Scene scan** — Accurate (ffmpeg scene detect) or Fast (keyframes, for huge files).
 - **Scene sensitivity** — 0.15 (more cuts) … 0.6 (only hard cuts). Default 0.40.
+- **Output quality** — High (near-original, default) / Balanced (faster, smaller) / Max (best, slowest).
+- **Enhance** — light sharpen + denoise + colour pop.
 - **Burn AI hook title** — overlay the AI title on each clip (AI on). Default on.
 - **Burn AI captions** — burn Whisper subtitles (needs AI + Whisper).
 
@@ -347,8 +352,11 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 
 ## 13. Known limitations
 
-- Captions quality depends on the Whisper model + language (use a multilingual model, not
-  `*.en`, for non-English audio).
+- **Captions need a compiled Whisper binary.** `nodejs-whisper` ships the npm wrapper but
+  whisper.cpp must be built (it isn't by default), so caption burn-in is honestly disabled
+  until that binary exists — the UI shows Whisper as "not installed" and clips are cut
+  without captions (the AI hook title needs no Whisper and still works). When present, caption
+  quality depends on the model + language (use a multilingual model, not `*.en`, for non-English).
 - "AI smart crop" only changes the frame in **crop** mode; in **blur** mode the whole frame is
   always shown, so crop bias has no visible effect there.
 - Hardware encoders may be *listed* by FFmpeg but fail at runtime (no GPU/driver); the app
@@ -391,6 +399,7 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 | **1.0.2** | **Performance:** optimized blur (downscale→blur→upscale, ≈5×), added live within-clip progress (`-progress pipe:1`), parallel cutting (2 concurrent), cancel-aware. |
 | **1.0.3** | **AI model picker** with live OpenRouter pricing, cheapest-first, ⭐ curated recommendation (filters out dynamic-priced routers and unreliable free models). **AI now visibly changes output:** burns the AI hook title onto clips, auto-enhances before processing, multilingual Whisper default. |
 | **1.0.4** | **Full-screen shorts by default** — default reframe changed from blurred-pad to **Fill screen** (crop sides), so 9:16 clips fill the whole frame with no blur bars. Reframe options relabelled/reordered; one-time settings migration moves existing installs off the old blur default. |
+| **1.0.5** | **Output quality + 3-round hardening.** Added quality levels (High near-original default / Balanced / Max), forced `yuv420p` for platform compatibility (incl. Intel QSV), Lanczos scaling, and an optional Enhance (denoise+sharpen) filter. Then ran a deep multi-agent review **three times** (25 confirmed bugs found and fixed): real FFmpeg error messages, OpenRouter request+body timeouts, robust JSON parsing, per-thumbnail fault tolerance, a unified `CancelledError` (no more string-matching), `try/finally` on every IPC handler (no job leaks / stuck UI), bounded progress buffers immune to chunk splits, path-hash work dirs (no same-name collisions), honest Whisper availability, VFR fps sanity cap, font/path resilience, and a captions-skipped warning. |
 
 ---
 

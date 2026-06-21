@@ -37,31 +37,45 @@ function runFfmpeg(args, { jobId, totalDurationSec, onProgress, collectStderr } 
 
     let stderr = '';
     let stdout = '';
+    let progressBuf = ''; // holds an incomplete trailing line across data events
 
-    if (collectStderr) {
-      proc.stderr.on('data', (d) => (stderr += d.toString()));
-    } else {
-      proc.stderr.on('data', () => {}); // drain to avoid backpressure
-    }
+    // Always accumulate stderr so failures carry FFmpeg's diagnostic output.
+    // Keep only the tail to bound memory on long, chatty encodes. The
+    // `collectStderr` flag controls whether stderr is returned on resolve.
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+      if (stderr.length > 64000) stderr = stderr.slice(-32000);
+    });
 
     proc.stdout.on('data', (d) => {
-      stdout += d.toString();
+      const chunk = d.toString();
+      stdout += chunk;
+      if (stdout.length > 64000) stdout = stdout.slice(-32000); // bound memory on long encodes
       if (onProgress && totalDurationSec) {
-        const m = /out_time_us=(\d+)/g;
-        let last;
-        let match;
-        while ((match = m.exec(stdout)) !== null) last = match[1];
-        if (last) {
-          const sec = Number(last) / 1e6;
-          const pct = Math.max(0, Math.min(100, (sec / totalDurationSec) * 100));
-          onProgress(pct);
+        // Buffer until newline so a value split across two chunks is never misread.
+        // The trailing \n in the regex guarantees only whole out_time_us values match.
+        progressBuf += chunk;
+        const nl = progressBuf.lastIndexOf('\n');
+        if (nl !== -1) {
+          const complete = progressBuf.slice(0, nl + 1);
+          progressBuf = progressBuf.slice(nl + 1);
+          if (progressBuf.length > 4000) progressBuf = progressBuf.slice(-2000);
+          const m = /out_time_us=(\d+)\n/g;
+          let last;
+          let match;
+          while ((match = m.exec(complete)) !== null) last = match[1];
+          if (last) {
+            const sec = Number(last) / 1e6;
+            const pct = Math.max(0, Math.min(100, (sec / totalDurationSec) * 100));
+            onProgress(pct);
+          }
         }
       }
     });
 
     proc.on('error', reject);
     proc.on('close', (code) => {
-      if (jobId && jobs.isCancelled(jobId)) return reject(new Error('cancelled'));
+      if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
       if (code !== 0) return reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-1500)}`));
       resolve({ stderr, stdout });
     });

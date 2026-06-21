@@ -51,7 +51,7 @@ function detectScenes(filePath, { threshold = 0.4, jobId, totalDurationSec, onPr
 
     proc.on('error', reject);
     proc.on('close', (code) => {
-      if (jobId && jobs.isCancelled(jobId)) return reject(new Error('cancelled'));
+      if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
       if (code !== 0) return reject(new Error(`scene detection failed (exit ${code})`));
       resolve([...new Set(times)].sort((a, b) => a - b));
     });
@@ -76,6 +76,7 @@ function detectKeyframes(filePath, { jobId } = {}) {
     proc.stderr.on('data', () => {});
     proc.on('error', reject);
     proc.on('close', (code) => {
+      if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
       if (code !== 0) return reject(new Error(`keyframe scan failed (exit ${code})`));
       const times = out
         .split('\n')

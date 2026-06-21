@@ -16,6 +16,8 @@ const KEY_FILE = () => path.join(app.getPath('userData'), 'openrouter.key');
 function load() {
   try {
     const raw = fs.readFileSync(SETTINGS_FILE(), 'utf8');
+    // Keep internal sentinels (e.g. _fsMigration) here so save() round-trips them to
+    // disk and migrate() stays idempotent. They are stripped at the settings:get edge.
     return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch (_) {
     return { ...DEFAULTS };

@@ -17,29 +17,57 @@ const HEADERS = (key) => ({
 
 function extractJson(text) {
   if (!text) return null;
-  // Strip code fences and grab the first {...} block.
   const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+  // Common case: the model returned bare JSON exactly as instructed.
+  try {
+    return JSON.parse(cleaned);
+  } catch (_) { /* fall through to brace-range slice */ }
+  // Fallback: grab the first {...last } block (handles trailing prose).
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) return null;
+  if (start === -1 || end === -1) {
+    console.warn('[openrouter] extractJson: no JSON object found:', cleaned.slice(0, 160));
+    return null;
+  }
   try {
     return JSON.parse(cleaned.slice(start, end + 1));
-  } catch (_) {
+  } catch (err) {
+    console.warn('[openrouter] extractJson: parse failed:', err.message, '| raw:', cleaned.slice(0, 160));
     return null;
   }
 }
 
-async function chat(key, model, messages, { maxTokens = 700, temperature = 0.7 } = {}) {
-  const res = await fetch(`${BASE}/chat/completions`, {
+/**
+ * fetch + parse JSON under a single AbortController timeout. The timer is only
+ * cleared after the body is fully read, so a server that sends headers and then
+ * stalls the body stream still aborts (no indefinite hang).
+ */
+async function fetchJson(url, options = {}, timeoutMs = 60000) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 300)}`);
+    }
+    return await res.json();
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error(`OpenRouter request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+async function chat(key, model, messages, { maxTokens = 700, temperature = 0.7, timeoutMs = 60000 } = {}) {
+  const data = await fetchJson(`${BASE}/chat/completions`, {
     method: 'POST',
     headers: HEADERS(key),
     body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 300)}`);
-  }
-  const data = await res.json();
+  }, timeoutMs);
   return data.choices && data.choices[0] && data.choices[0].message
     ? data.choices[0].message.content
     : '';
@@ -53,9 +81,11 @@ async function testKey(key, model) {
 }
 
 async function listModels(key) {
-  const res = await fetch(`${BASE}/models`, { headers: key ? HEADERS(key) : { 'Content-Type': 'application/json' } });
-  if (!res.ok) throw new Error(`OpenRouter ${res.status}`);
-  const data = await res.json();
+  const data = await fetchJson(
+    `${BASE}/models`,
+    { headers: key ? HEADERS(key) : { 'Content-Type': 'application/json' } },
+    20000,
+  );
   return (data.data || [])
     .map((m) => {
       const p = m.pricing || {};

@@ -94,6 +94,14 @@
               <select id="reframeMode"></select>
             </label>
             <label class="field">
+              <span>Output quality</span>
+              <select id="outputQuality">
+                <option value="high">High — near-original (default)</option>
+                <option value="balanced">Balanced — faster, smaller</option>
+                <option value="max">Max — best, slowest</option>
+              </select>
+            </label>
+            <label class="field">
               <span>Scene scan</span>
               <select id="scanMode">
                 <option value="accurate">Accurate (scene detect)</option>
@@ -103,6 +111,10 @@
             <label class="field">
               <span>Scene sensitivity <em id="threshVal">0.40</em></span>
               <input type="range" id="sceneThreshold" min="0.15" max="0.6" step="0.05" value="0.4" />
+            </label>
+            <label class="field checkbox">
+              <input type="checkbox" id="enhance" />
+              <span>Enhance (sharpen + denoise)</span>
             </label>
             <label class="field checkbox">
               <input type="checkbox" id="burnTitle" checked />

@@ -15,17 +15,31 @@ const { encoderArgs } = require('./hwaccel');
 const { ASPECT_RATIOS } = require('../constants');
 const jobs = require('../jobs');
 
-// Bold system font for the hook title (present on all Windows installs).
-const TITLE_FONT = 'C\\:/Windows/Fonts/ARIALBD.TTF';
-
 function sanitize(name) {
   return String(name || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 80) || 'clip';
 }
 
 /** Escape a Windows path for use inside an ffmpeg filter option value. */
 function escFilterPath(p) {
-  return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  return p
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "'\\''"); // an apostrophe in the path must not terminate the quoted value
 }
+
+// Resolve a bold system font for the hook title once, robust to non-C: Windows
+// installs and SKUs missing Arial. null → title burn is skipped (clip still renders).
+const TITLE_FONT = (() => {
+  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  const candidates = ['ARIALBD.TTF', 'arialbd.ttf', 'segoeuib.ttf', 'seguisb.ttf', 'ARIAL.TTF', 'arial.ttf', 'segoeui.ttf'];
+  for (const f of candidates) {
+    try {
+      const p = path.join(root, 'Fonts', f);
+      if (fs.existsSync(p)) return escFilterPath(p);
+    } catch (_) { /* ignore */ }
+  }
+  return null;
+})();
 
 /**
  * Build the full filter_complex. Returns { filter, map } or null when no filtering
@@ -49,7 +63,7 @@ function buildFilterComplex(o) {
     if (o.reframeMode === 'crop' || o.reframeMode === 'smart') {
       const bias = Math.max(-1, Math.min(1, o.cropBias || 0));
       const x = `(in_w-out_w)/2+${(bias * 0.5).toFixed(3)}*(in_w-out_w)`;
-      parts.push(`${inLabel}scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}:${x}:(in_h-out_h)/2${out}`);
+      parts.push(`${inLabel}scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}:${x}:(in_h-out_h)/2${out}`);
     } else {
       // Blur pad — blur a downscaled copy then upscale (≈5x faster than full-size blur).
       const sw = Math.max(2, Math.round(w / 4 / 2) * 2);
@@ -57,14 +71,21 @@ function buildFilterComplex(o) {
       parts.push(
         `${inLabel}split=2[bg][fg];` +
         `[bg]scale=${sw}:${sh}:force_original_aspect_ratio=increase,crop=${sw}:${sh},boxblur=12:2,scale=${w}:${h}[bgb];` +
-        `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease[fgs];` +
+        `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[fgs];` +
         `[bgb][fgs]overlay=(W-w)/2:(H-h)/2${out}`
       );
     }
     inLabel = out;
   }
 
-  if (o.titleFile) {
+  // Optional enhance: light denoise + sharpen + subtle pop (perceived quality boost).
+  if (o.enhance) {
+    const out = next();
+    parts.push(`${inLabel}hqdn3d=2:1.5:4:4,unsharp=5:5:0.7:5:5:0.0,eq=saturation=1.06:contrast=1.03${out}`);
+    inLabel = out;
+  }
+
+  if (o.titleFile && TITLE_FONT) {
     const out = next();
     const fontSize = Math.max(22, Math.round(Math.min(outW, outH) / 20));
     parts.push(
@@ -92,7 +113,7 @@ function buildFilterComplex(o) {
 /** Cut a single segment to outPath. */
 async function cutClip(filePath, seg, outPath, options) {
   const { hwAccel, hasAudio } = options;
-  const encArgs = await encoderArgs(hwAccel);
+  const { vargs, audioBitrate } = await encoderArgs(hwAccel, options.quality);
 
   const args = ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats'];
   // Fast + accurate: input seeking before -i, re-encode trims precisely from prior keyframe.
@@ -102,6 +123,7 @@ async function cutClip(filePath, seg, outPath, options) {
     ratioKey: options.ratioKey,
     reframeMode: options.reframeMode,
     cropBias: seg.cropBias || 0,
+    enhance: options.enhance,
     titleFile: seg.titleFile || null,
     subtitlePath: seg.subtitlePath || options.subtitlePath || null,
     srcW: options.srcW,
@@ -113,8 +135,8 @@ async function cutClip(filePath, seg, outPath, options) {
     if (hasAudio) args.push('-map', '0:a:0?');
   }
 
-  args.push(...encArgs);
-  if (hasAudio) args.push('-c:a', 'aac', '-b:a', '128k');
+  args.push(...vargs);
+  if (hasAudio) args.push('-c:a', 'aac', '-b:a', audioBitrate);
   else args.push('-an');
   args.push('-movflags', '+faststart', outPath);
 
@@ -163,7 +185,7 @@ async function cutAll(filePath, segments, workDir, options) {
         results[i] = { ...seg, outputPath: outPath, fileName: path.basename(outPath) };
         report();
       } catch (err) {
-        if (String(err && err.message).includes('cancelled')) return;
+        if (err && err.isCancelled) return;
         frac[i] = 1;
         completed += 1;
         results[i] = null;

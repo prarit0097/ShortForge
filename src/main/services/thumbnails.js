@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { runFfmpeg } = require('./ffmpeg-util');
+const jobs = require('../jobs');
 
 /**
  * Extract one JPEG near each segment start.
@@ -19,20 +20,28 @@ async function extractThumbs(filePath, segments, outDir, { jobId, scale = 360, o
     // Grab a frame a hair after the start to avoid black transition frames.
     const at = Math.max(0, seg.start + Math.min(0.5, seg.duration / 4));
     const thumbPath = path.join(outDir, `seg_${String(seg.index).padStart(4, '0')}.jpg`);
-    // eslint-disable-next-line no-await-in-loop
-    await runFfmpeg(
-      [
-        '-hide_banner', '-y',
-        '-ss', String(at),
-        '-i', filePath,
-        '-frames:v', '1',
-        '-vf', `scale=${scale}:-1`,
-        '-q:v', '3',
-        thumbPath,
-      ],
-      { jobId }
-    );
-    out.push({ ...seg, thumbPath });
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await runFfmpeg(
+        [
+          '-hide_banner', '-y',
+          '-ss', String(at),
+          '-i', filePath,
+          '-frames:v', '1',
+          '-vf', `scale=${scale}:-1`,
+          '-q:v', '3',
+          thumbPath,
+        ],
+        { jobId }
+      );
+      out.push({ ...seg, thumbPath });
+    } catch (err) {
+      // A single undecodable frame must not abort the whole analysis — keep the
+      // segment, just without a preview (the UI + AI handle a null thumbPath).
+      if (err && err.isCancelled) throw err;
+      out.push({ ...seg, thumbPath: null });
+    }
+    if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
     if (onProgress) onProgress(((i + 1) / segments.length) * 100);
   }
   return out;

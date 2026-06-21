@@ -7,6 +7,19 @@
 
 const jobs = new Map(); // jobId -> { procs:Set<ChildProcess>, cancelled:boolean }
 
+/**
+ * Dedicated cancellation error. Carrying an `isCancelled` flag means callers never
+ * have to substring-match the message 'cancelled' (which could appear legitimately
+ * in ffmpeg/ffprobe stderr or a filename) to detect a user cancel.
+ */
+class CancelledError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'CancelledError';
+    this.isCancelled = true;
+  }
+}
+
 function create(jobId) {
   const job = { procs: new Set(), cancelled: false };
   jobs.set(jobId, job);
@@ -48,4 +61,4 @@ function done(jobId) {
   jobs.delete(jobId);
 }
 
-module.exports = { create, get, register, isCancelled, cancel, done };
+module.exports = { create, get, register, isCancelled, cancel, done, CancelledError };

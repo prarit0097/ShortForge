@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { ipcMain, dialog, shell, app } = require('electron');
 
 const settingsStore = require('./settings');
@@ -60,7 +61,10 @@ function wrapText(text, maxChars) {
 
 function workDirFor(filePath) {
   const base = sanitizeName(path.basename(filePath, path.extname(filePath)));
-  return path.join(app.getPath('userData'), 'work', base);
+  // Hash the full (normalized, lowercased) path so two different videos that share a
+  // basename never collide — otherwise one job's transcript/thumbs leak into another.
+  const hash = crypto.createHash('sha1').update(path.resolve(filePath).toLowerCase()).digest('hex').slice(0, 8);
+  return path.join(app.getPath('userData'), 'work', `${base}_${hash}`);
 }
 
 /** Bounded-concurrency map over items. */
@@ -121,11 +125,14 @@ function registerIpc(winGetter) {
   });
 
   // ---- Settings / AI config --------------------------------------------------
-  ipcMain.handle('settings:get', async () => ({
-    ...settingsStore.load(),
-    hasApiKey: settingsStore.hasApiKey(),
-    whisperAvailable: transcribe.isAvailable(),
-  }));
+  ipcMain.handle('settings:get', async () => {
+    const { _fsMigration, ...settings } = settingsStore.load(); // hide internal sentinel
+    return {
+      ...settings,
+      hasApiKey: settingsStore.hasApiKey(),
+      whisperAvailable: transcribe.isAvailable(),
+    };
+  });
 
   ipcMain.handle('settings:set', async (_e, partial) => settingsStore.save(partial || {}));
 
@@ -148,45 +155,51 @@ function registerIpc(winGetter) {
   // ---- Analyze ---------------------------------------------------------------
   ipcMain.handle('analyze:run', async (_e, { filePath, settings, jobId }) => {
     jobs.create(jobId);
-    const meta = await probe(filePath);
-    progress(jobId, STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
+    try {
+      const meta = await probe(filePath);
+      progress(jobId, STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
 
-    // Scene detection (accurate) or fast keyframe fallback.
-    let sceneTimes;
-    if (settings.scanMode === 'fast') {
-      progress(jobId, STAGES.SCENES, 5, 'Fast keyframe scan...');
-      sceneTimes = await detectKeyframes(filePath, { jobId });
-      progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} keyframes`);
-    } else {
-      sceneTimes = await detectScenes(filePath, {
-        threshold: settings.sceneThreshold,
+      // Scene detection (accurate) or fast keyframe fallback.
+      let sceneTimes;
+      if (settings.scanMode === 'fast') {
+        progress(jobId, STAGES.SCENES, 5, 'Fast keyframe scan...');
+        sceneTimes = await detectKeyframes(filePath, { jobId });
+        progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} keyframes`);
+      } else {
+        sceneTimes = await detectScenes(filePath, {
+          threshold: settings.sceneThreshold,
+          jobId,
+          totalDurationSec: meta.duration,
+          onProgress: (p) => progress(jobId, STAGES.SCENES, p, 'Detecting scenes...'),
+        });
+        progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} scene changes`);
+      }
+      if (jobs.isCancelled(jobId)) { jobs.done(jobId); return { cancelled: true }; }
+
+      // Full-coverage segmentation.
+      const segments = buildSegments(sceneTimes, meta.duration, settings);
+      progress(jobId, STAGES.SEGMENT, 100, `${segments.length} shorts planned`);
+
+      // Thumbnails for the UI.
+      const thumbDir = path.join(workDirFor(filePath), 'thumbs');
+      const withThumbs = await extractThumbs(filePath, segments, thumbDir, {
         jobId,
-        totalDurationSec: meta.duration,
-        onProgress: (p) => progress(jobId, STAGES.SCENES, p, 'Detecting scenes...'),
+        scale: 360,
+        onProgress: (p) => progress(jobId, STAGES.THUMBS, p, 'Building previews...'),
       });
-      progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} scene changes`);
+
+      jobs.done(jobId);
+      return {
+        meta,
+        sceneCount: sceneTimes.length,
+        segments: withThumbs.map((s) => ({ ...s, selected: true })),
+        shortsCount: withThumbs.length,
+      };
+    } catch (err) {
+      jobs.done(jobId);
+      if (err && err.isCancelled) return { cancelled: true };
+      throw err;
     }
-    if (jobs.isCancelled(jobId)) { jobs.done(jobId); return { cancelled: true }; }
-
-    // Full-coverage segmentation.
-    const segments = buildSegments(sceneTimes, meta.duration, settings);
-    progress(jobId, STAGES.SEGMENT, 100, `${segments.length} shorts planned`);
-
-    // Thumbnails for the UI.
-    const thumbDir = path.join(workDirFor(filePath), 'thumbs');
-    const withThumbs = await extractThumbs(filePath, segments, thumbDir, {
-      jobId,
-      scale: 360,
-      onProgress: (p) => progress(jobId, STAGES.THUMBS, p, 'Building previews...'),
-    });
-
-    jobs.done(jobId);
-    return {
-      meta,
-      sceneCount: sceneTimes.length,
-      segments: withThumbs.map((s) => ({ ...s, selected: true })),
-      shortsCount: withThumbs.length,
-    };
   });
 
   // ---- AI enrich -------------------------------------------------------------
@@ -196,107 +209,125 @@ function registerIpc(winGetter) {
     if (!key) { jobs.done(jobId); throw new Error('Set your OpenRouter API key in Settings first.'); }
 
     const models = { vision: settings.aiModelVision, text: settings.aiModelText };
-
-    // Optional transcription (captions + better titles).
-    let transcriptSegs = [];
-    if (settings.useTranscript !== false && transcribe.isAvailable()) {
-      progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing audio (Whisper)...');
-      const tr = await transcribe.transcribe(filePath, { model: settings.whisperModel, jobId });
-      transcriptSegs = tr.segments || [];
-      progress(jobId, STAGES.TRANSCRIBE, 100,
-        transcriptSegs.length ? `${transcriptSegs.length} transcript lines` : 'No speech detected');
-    }
-    if (jobs.isCancelled(jobId)) { jobs.done(jobId); return { cancelled: true }; }
-
-    let done = 0;
-    const enriched = await pool(segments, 3, async (seg) => {
-      if (jobs.isCancelled(jobId)) return seg;
-      let dataUri = null;
-      try { if (seg.thumbPath) dataUri = thumbAsDataUri(seg.thumbPath); } catch (_) { /* ignore */ }
-      const tText = transcribe.textForRange(transcriptSegs, seg.start, seg.end);
-      let ai = {};
-      try {
-        ai = await openrouter.enrichSegment(key, models, seg, dataUri, tText);
-      } catch (err) {
-        ai = { aiError: err.message, title: seg.title || `Short ${seg.index + 1}` };
-      }
-      done += 1;
-      progress(jobId, STAGES.AI, (done / segments.length) * 100, `AI analysed ${done}/${segments.length}`);
-      return { ...seg, ...ai, transcript: tText };
-    });
-
-    // Persist transcript on disk so process() can reuse it for caption burn-in.
     try {
-      const tf = path.join(workDirFor(filePath), 'transcript.json');
-      fs.mkdirSync(path.dirname(tf), { recursive: true });
-      fs.writeFileSync(tf, JSON.stringify(transcriptSegs), 'utf8');
-    } catch (_) { /* ignore */ }
+      // Optional transcription (captions + better titles).
+      let transcriptSegs = [];
+      if (settings.useTranscript !== false && transcribe.isAvailable()) {
+        progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing audio (Whisper)...');
+        const tr = await transcribe.transcribe(filePath, { model: settings.whisperModel, jobId });
+        transcriptSegs = tr.segments || [];
+        progress(jobId, STAGES.TRANSCRIBE, 100,
+          transcriptSegs.length ? `${transcriptSegs.length} transcript lines` : 'No speech detected');
+      }
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
 
-    jobs.done(jobId);
-    return { segments: enriched, hasTranscript: transcriptSegs.length > 0 };
+      let done = 0;
+      const enriched = await pool(segments, 3, async (seg) => {
+        if (jobs.isCancelled(jobId)) return seg;
+        let dataUri = null;
+        try { if (seg.thumbPath) dataUri = thumbAsDataUri(seg.thumbPath); } catch (_) { /* ignore */ }
+        const tText = transcribe.textForRange(transcriptSegs, seg.start, seg.end);
+        let ai = {};
+        try {
+          ai = await openrouter.enrichSegment(key, models, seg, dataUri, tText);
+        } catch (err) {
+          ai = { aiError: err.message, title: seg.title || `Short ${seg.index + 1}` };
+        }
+        done += 1;
+        progress(jobId, STAGES.AI, (done / segments.length) * 100, `AI analysed ${done}/${segments.length}`);
+        return { ...seg, ...ai, transcript: tText };
+      });
+
+      // If the user cancelled during the pool, don't return partial enrichment.
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
+
+      // Persist transcript on disk so process() can reuse it for caption burn-in.
+      try {
+        const tf = path.join(workDirFor(filePath), 'transcript.json');
+        fs.mkdirSync(path.dirname(tf), { recursive: true });
+        fs.writeFileSync(tf, JSON.stringify(transcriptSegs), 'utf8');
+      } catch (_) { /* ignore */ }
+
+      return { segments: enriched, hasTranscript: transcriptSegs.length > 0 };
+    } finally {
+      jobs.done(jobId);
+    }
   });
 
   // ---- Process (cut) ---------------------------------------------------------
   ipcMain.handle('process:run', async (_e, { filePath, segments, settings, jobId }) => {
     jobs.create(jobId);
-    const meta = await probe(filePath);
-    const workDir = workDirFor(filePath);
-    const clipsDir = path.join(workDir, 'clips');
-    fs.mkdirSync(clipsDir, { recursive: true });
+    try {
+      const meta = await probe(filePath);
+      const workDir = workDirFor(filePath);
+      const clipsDir = path.join(workDir, 'clips');
+      fs.mkdirSync(clipsDir, { recursive: true });
 
-    // Load transcript for caption burn-in if requested.
-    let transcriptSegs = [];
-    if (settings.burnCaptions) {
-      try {
-        transcriptSegs = JSON.parse(fs.readFileSync(path.join(workDir, 'transcript.json'), 'utf8'));
-      } catch (_) { transcriptSegs = []; }
+      // Load transcript for caption burn-in if requested.
+      let transcriptSegs = [];
+      if (settings.burnCaptions) {
+        try {
+          transcriptSegs = JSON.parse(fs.readFileSync(path.join(workDir, 'transcript.json'), 'utf8'));
+        } catch (_) { transcriptSegs = []; }
+      }
+      const captionsSkipped = !!settings.burnCaptions && transcriptSegs.length === 0;
+
+      const burnTitle = settings.aiEnabled && settings.burnTitle !== false;
+
+      // Attach per-clip caption + title files. Title is what makes an AI render visibly
+      // different; we skip generic placeholder titles so non-AI clips aren't tagged.
+      const prepared = segments.map((seg) => {
+        const extra = {};
+        if (settings.burnCaptions && transcriptSegs.length) {
+          const srtPath = path.join(clipsDir, `seg_${seg.index}.srt`);
+          extra.subtitlePath = transcribe.writeClipSrt(transcriptSegs, seg.start, seg.end, srtPath);
+        }
+        const isRealTitle = seg.title && !/^short\s*\d+$/i.test(seg.title.trim());
+        if (burnTitle && isRealTitle) {
+          const tf = path.join(clipsDir, `title_${seg.index}.txt`);
+          fs.writeFileSync(tf, wrapText(seg.title, 20), 'utf8');
+          extra.titleFile = tf;
+        }
+        return { ...seg, ...extra };
+      });
+
+      const clips = await cutter.cutAll(filePath, prepared, clipsDir, {
+        jobId,
+        ratioKey: settings.aspectRatio,
+        reframeMode: settings.reframeMode,
+        hwAccel: settings.hwAccel,
+        quality: settings.outputQuality,
+        enhance: !!settings.enhance,
+        hasAudio: meta.hasAudio,
+        srcW: meta.width,
+        srcH: meta.height,
+        concurrency: settings.cutConcurrency || 2,
+        onProgress: (overall, completed, total) =>
+          progress(jobId, STAGES.CUT, overall, `Cutting shorts… ${completed}/${total} done`),
+      });
+
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
+      return { clips, workDir: clipsDir, captionsSkipped };
+    } catch (err) {
+      if (err && err.isCancelled) return { cancelled: true };
+      throw err;
+    } finally {
+      jobs.done(jobId);
     }
-
-    const burnTitle = settings.aiEnabled && settings.burnTitle !== false;
-
-    // Attach per-clip caption + title files. Title is what makes an AI render visibly
-    // different; we skip generic placeholder titles so non-AI clips aren't tagged.
-    const prepared = segments.map((seg) => {
-      const extra = {};
-      if (settings.burnCaptions && transcriptSegs.length) {
-        const srtPath = path.join(clipsDir, `seg_${seg.index}.srt`);
-        extra.subtitlePath = transcribe.writeClipSrt(transcriptSegs, seg.start, seg.end, srtPath);
-      }
-      const isRealTitle = seg.title && !/^short\s*\d+$/i.test(seg.title.trim());
-      if (burnTitle && isRealTitle) {
-        const tf = path.join(clipsDir, `title_${seg.index}.txt`);
-        fs.writeFileSync(tf, wrapText(seg.title, 20), 'utf8');
-        extra.titleFile = tf;
-      }
-      return { ...seg, ...extra };
-    });
-
-    const clips = await cutter.cutAll(filePath, prepared, clipsDir, {
-      jobId,
-      ratioKey: settings.aspectRatio,
-      reframeMode: settings.reframeMode,
-      hwAccel: settings.hwAccel,
-      hasAudio: meta.hasAudio,
-      srcW: meta.width,
-      srcH: meta.height,
-      concurrency: settings.cutConcurrency || 2,
-      onProgress: (overall, completed, total) =>
-        progress(jobId, STAGES.CUT, overall, `Cutting shorts… ${completed}/${total} done`),
-    });
-
-    jobs.done(jobId);
-    return { clips, workDir: clipsDir };
   });
 
   // ---- Export ----------------------------------------------------------------
   ipcMain.handle('export:batch', async (_e, { clips, destDir, settings, jobId }) => {
     jobs.create(jobId);
-    const results = await exporter.exportClips(clips, destDir, {
-      concurrency: (settings && settings.exportConcurrency) || 2,
-      onProgress: (p, n, total) => progress(jobId, STAGES.EXPORT, p, `Exported ${n}/${total}`),
-    });
-    jobs.done(jobId);
-    return { results, destDir };
+    try {
+      const results = await exporter.exportClips(clips, destDir, {
+        concurrency: (settings && settings.exportConcurrency) || 2,
+        onProgress: (p, n, total) => progress(jobId, STAGES.EXPORT, p, `Exported ${n}/${total}`),
+      });
+      return { results, destDir };
+    } finally {
+      jobs.done(jobId);
+    }
   });
 
   // ---- Job control + shell ---------------------------------------------------

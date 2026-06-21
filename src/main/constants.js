@@ -23,6 +23,8 @@ const DEFAULTS = {
   sceneThreshold: 0.4, // 0.3 sensitive, 0.4 default, 0.5 only hard cuts
   aspectRatio: '9:16',
   reframeMode: 'crop', // full-screen fill by default; 'blur' keeps the whole scene with bars
+  outputQuality: 'high', // high (near-original) | balanced | max
+  enhance: false, // light sharpen + denoise + colour pop
   aiEnabled: false,
   hwAccel: 'auto', // auto | nvenc | qsv | amf | cpu
   exportConcurrency: 2,

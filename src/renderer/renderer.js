@@ -78,6 +78,8 @@ async function loadSettings() {
   $('sceneThreshold').value = s.sceneThreshold;
   $('threshVal').textContent = Number(s.sceneThreshold).toFixed(2);
   $('scanMode').value = s.scanMode || 'accurate';
+  $('outputQuality').value = s.outputQuality || 'high';
+  $('enhance').checked = !!s.enhance;
   $('burnCaptions').checked = !!s.burnCaptions;
   $('burnTitle').checked = s.burnTitle !== false;
   ensureOption($('aiModelVision'), s.aiModelVision);
@@ -207,6 +209,8 @@ function gatherSettings() {
     scanMode: $('scanMode').value,
     aspectRatio: $('aspectRatio').value,
     reframeMode: $('reframeMode').value,
+    outputQuality: $('outputQuality').value,
+    enhance: $('enhance').checked,
     burnCaptions: $('burnCaptions').checked,
     burnTitle: $('burnTitle').checked,
     aiEnabled: state.settings.aiEnabled,
@@ -431,6 +435,9 @@ async function process() {
     $('downloadBtn').classList.remove('hidden');
     setStep(5, 5);
     toast(`${res.clips.length} shorts ready — hover to preview, then download`, 'ok');
+    if (res.captionsSkipped) {
+      toast('Captions were requested but no transcript was available (needs AI Layer + Whisper installed) — shorts were cut without captions.', 'err');
+    }
   } catch (err) {
     toast(`Processing failed: ${err.message}`, 'err');
   } finally {
