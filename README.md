@@ -5,6 +5,11 @@ short clips **scene-by-scene with full coverage** — nothing gets skipped. Opti
 (OpenRouter) adds scene understanding, virality scoring, auto titles/captions/hashtags and
 smart subject-tracking crop. Everything runs **locally** on your PC — no uploads.
 
+
+## Maintainer and project overview
+
+Built by [Prarit Sidana](https://praritsidana.com/). See the [ShortForge project overview](https://praritsidana.com/projects/shortforge) for its place in the portfolio.
+
 ## Features
 
 - **Import** any video/movie (MP4, MKV, MOV, AVI, WEBM, …). Drag-drop or browse. Handles huge files (read from disk, never loaded into RAM).
