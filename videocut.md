@@ -397,7 +397,8 @@ The server retains 32 finished jobs during its lifetime. It accepts sources up t
 - **Output quality** — High (near-original, default) / Balanced (faster, smaller) / Max (best, slowest).
 - **Enhance** — light sharpen + denoise + colour pop.
 - **Burn AI hook title** — overlay the AI title on each clip (AI on). Default on.
-- **Burn captions** — use local Whisper on the selected audio track or mix to create burned-in subtitles.
+- **Burn captions** — use local Whisper on the selected clips and audio track or mix. The progress
+  dialog reports how much selected audio Whisper has processed. **Cancel** stops active transcription.
 
 **Settings modal (⚙):**
 - **OpenRouter API key** — Save / Test. Stored encrypted (DPAPI).
@@ -485,6 +486,7 @@ The server retains 32 finished jobs during its lifetime. It accepts sources up t
 | **1.3.0** | Added the local CLI and stdio MCP server, source-bound segment IDs, and job progress, cancellation, and result metadata for automation. Updated the optional Whisper backend and fixed subtitle timing at clip boundaries. |
 | **1.4.0** | Paste a public YouTube or direct video link to download and scan for local gameplay highlights, with optional automatic HUD-safe 9:16 rendering. |
 | **1.5.0** | Refined the desktop workspace with separate link and file import, keyboard-accessible workflow navigation, compact clip setup, visible selection counts, and native settings and progress dialogs. |
+| **1.5.1** | Restricted Whisper to the selected clip ranges, added measured transcription progress, and made active transcription cancellable. |
 
 ---
 
@@ -516,6 +518,13 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 **Workspace verification for 1.5.0.** All 50 regression tests passed. Windows Electron smoke tests covered the default 1280×860 window and minimum 980×680 window, including video import, highlight review, rerendering, export, and project reopen. They also checked the native settings dialog, focus restoration, advanced settings disclosure, workflow navigation, and selection counts. The import and editor layouts were visually reviewed in Electron. Representative primary button text, muted labels, input placeholders, and focus outlines met the contrast targets.
 
 **Full Windows release retest for 1.5.0.** All 50 regression tests passed again. The expanded Electron smoke test verified full-coverage scene analysis and cancellation of an active link download, including removal of its partial files. The editor workflow passed against the checkout with CPU encoding and the extracted NSIS installer payload at 980×680 with Auto selecting Intel Quick Sync. The extracted executable and app archive matched the unpacked build, and all 34 packaged source files matched the checkout byte for byte. The extracted app passed the MCP stdio render test, downloaded a public YouTube video and rendered a playable 1080×1920 H.264 clip, and used native Whisper to generate captions that were verified in rendered frames. OpenRouter approval and payload handling were tested with a mock. The production npm dependency audit reported zero findings.
+
+**Whisper verification for 1.5.1.** All 53 automated tests passed with a local Whisper model and
+synthetic speech. The tests verified selected audio ranges, source-relative timestamps, intermediate
+progress, and cancellation after native inference had already produced a timestamped segment. The
+Windows Electron smoke test used an unselected gap between two chosen clips, cancelled transcription
+from the progress dialog, and rendered exactly two captioned clips on retry. Both manual and
+automatic coverage enrichment requested only the selected clip when transcript sharing was enabled.
 
 **This is a standing rule for this project:**
 

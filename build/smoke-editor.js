@@ -41,8 +41,8 @@ function runInPage(sourceCode) {
   return window.webContents.executeJavaScript(sourceCode, true);
 }
 
-async function waitFor(sourceCode, label) {
-  const deadline = Date.now() + 20000;
+async function waitFor(sourceCode, label, timeout = 20000) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const result = await runInPage(sourceCode);
     if (result) return result;
@@ -310,6 +310,110 @@ async function smoke() {
   await smokeHighlightsAndWatcher();
   await smokeLinkImport();
   await smokeEnrichmentConsent();
+  if (process.env.SHORTFORGE_TEST_WHISPER_SPEECH && process.env.SHORTFORGE_TEST_WHISPER_MODELS) {
+    await smokeSelectedCaptions();
+  }
+}
+
+async function smokeSelectedCaptions() {
+  const recording = path.join(workspace, 'Caption ranges.mkv');
+  const model = 'ggml-tiny.en.bin';
+  const modelDir = path.join(userData, 'whisper-models');
+  fs.mkdirSync(modelDir);
+  fs.copyFileSync(path.join(process.env.SHORTFORGE_TEST_WHISPER_MODELS, model), path.join(modelDir, model));
+  ffmpeg(['-f', 'lavfi', '-i', 'color=s=320x180:r=12:d=32',
+    '-i', process.env.SHORTFORGE_TEST_WHISPER_SPEECH,
+    '-af', 'aresample=16000,apad=whole_dur=8,aloop=loop=3:size=128000,atrim=end=32',
+    '-c:v', 'libx264', '-c:a', 'pcm_s16le', recording]);
+  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [recording] });
+  await click('#addVideoBtn');
+  await waitFor('document.querySelector("#fileName").textContent === "Caption ranges.mkv"', 'Caption recording import');
+  await setValue('#clipMode', 'coverage');
+  await setValue('#aspectRatio', 'original');
+  await setValue('#minLen', '8');
+  await setValue('#targetLen', '8');
+  await setValue('#maxLen', '8');
+  await setValue('#whisperModel', 'tiny.en');
+  await runInPage('document.querySelector("#burnCaptions").checked = true');
+  await click('#analyzeBtn');
+  await waitFor('document.querySelectorAll("#clipGrid .clip-check").length === 4', 'Four coverage clips');
+  await click('#selectNone');
+  await click('#clipGrid [data-clip="1"] .clip-check');
+  await click('#clipGrid [data-clip="3"] .clip-check');
+  await runInPage(`
+    window.captionProgress = [];
+    const progressText = document.querySelector('#progMsg');
+    new MutationObserver(() => window.captionProgress.push(progressText.textContent))
+      .observe(progressText, { childList: true });
+  `);
+  await click('#processBtn');
+  await waitFor('/^Transcribing selected audio.*0\\/2/.test(document.querySelector("#progMsg").textContent)',
+    'Active Whisper transcription of two selected ranges');
+  const cancelAt = performance.now();
+  await runInPage('document.querySelector("#cancelBtn").click()');
+  await waitFor('!document.querySelector("#progressOverlay").open', 'Cancel during Whisper transcription');
+  const cancelMs = Math.round(performance.now() - cancelAt);
+  assert.ok(cancelMs < 2000, `Caption cancel took ${cancelMs}ms`);
+  assert.match(await runInPage('document.querySelector("#renderStatus").textContent'), /2 cancelled/);
+  assert.deepEqual(fs.readdirSync(modelDir), [model]);
+
+  await click('#processBtn');
+  await waitFor('document.querySelector("#renderStatus").textContent.includes("2/2 shorts rendered")',
+    'Captioned retry renders only the selected clips', 60000);
+  const messages = await runInPage('window.captionProgress');
+  assert.ok(messages.some((message) => /Transcribing selected audio.*(?:[1-9]|[1-9]\d)%.*\/2/.test(message)),
+    'No intermediate progress was displayed');
+  const work = path.join(userData, 'work');
+  const workDir = fs.readdirSync(work).find((name) => name.startsWith('Caption_ranges_'));
+  const clipsDir = path.join(work, workDir, 'clips');
+  const outputs = fs.readdirSync(clipsDir, { recursive: true }).filter((name) => name.endsWith('.mp4'));
+  assert.equal(outputs.length, 2);
+  for (const output of outputs) {
+    const pixels = execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', path.join(clipsDir, output),
+      '-vf', 'fps=2,scale=160:90,format=gray', '-f', 'rawvideo', 'pipe:1'], { windowsHide: true, timeout: 10000 });
+    assert.ok(pixels.some((value) => value > 150), 'Expected visible subtitles on the black fixture');
+  }
+  console.log(`Caption smoke passed: selected ranges, intermediate progress, Cancel in ${cancelMs}ms, and two rendered clips with visible subtitles.`);
+  await smokeCoverageEnrichmentSelection();
+}
+
+async function smokeCoverageEnrichmentSelection() {
+  const fetch = global.fetch;
+  const messageBox = dialog.showMessageBox;
+  const prompts = [];
+  try {
+    global.fetch = async () => ({ ok: true, json: async () => ({ data: [] }) });
+    dialog.showMessageBox = async (_window, options) => {
+      prompts.push(options.message);
+      return { response: 1 };
+    };
+    await click('#openSettings');
+    await setValue('#apiKey', 'test-only-openrouter-key', []);
+    await click('#saveKey');
+    await waitFor('document.querySelector("#keyStatus").textContent.includes("Key saved")', 'Test AI key');
+    await runInPage('document.querySelector("#shareTranscriptContext").checked = true');
+    await click('#saveSettings');
+    await waitFor('!document.querySelector("#settingsModal").open', 'Transcript sharing settings');
+    await click('#aiToggle');
+    await click('#selectNone');
+    await click('#clipGrid [data-clip="0"] .clip-check');
+    await click('#enrichBtn');
+    const consentDeclined = `!document.querySelector('#progressOverlay').open &&
+      Array.from(document.querySelectorAll('.toast')).some((el) => el.textContent === 'AI enrichment cancelled.')`;
+    await waitFor(consentDeclined, 'Coverage enrichment consent');
+    assert.deepEqual(prompts, ['Enrich 1 clip?']);
+    await runInPage(`document.querySelectorAll('.toast').forEach((el) => {
+      if (el.textContent === 'AI enrichment cancelled.') el.remove();
+    })`);
+    await click('#processBtn');
+    await waitFor(consentDeclined, 'Coverage auto-enrichment consent');
+    assert.deepEqual(prompts, ['Enrich 1 clip?', 'Enrich 1 clip?']);
+  } finally {
+    global.fetch = fetch;
+    dialog.showMessageBox = messageBox;
+    settings.setApiKey('');
+  }
+  console.log('Coverage enrichment smoke passed: manual and automatic enrichment requested only the selected clip.');
 }
 
 async function smokeLinkImport() {

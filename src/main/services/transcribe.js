@@ -9,100 +9,129 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { randomUUID } = require('node:crypto');
+const { fork, execFile } = require('node:child_process');
 const { runFfmpeg } = require('./ffmpeg-util');
 const jobs = require('../jobs');
 
-let whisperMod = null;
-function loadWhisper() {
-  if (whisperMod !== null) return whisperMod;
+/** The optional wrapper can load even when neither backend is installed. */
+function whisperBackend() {
   try {
-    // Lazy require so a failed build never crashes the app at startup.
-    // eslint-disable-next-line global-require, import/no-extraneous-dependencies
-    whisperMod = require('nodejs-whisper');
-  } catch (err) {
-    console.warn('[transcribe] nodejs-whisper unavailable:', err.message);
-    whisperMod = false;
-  }
-  return whisperMod;
-}
-
-/** The JavaScript wrapper can load before a CLI or native backend is installed. */
-function whisperBackendExists() {
-  try {
-    const pkgDir = path.dirname(require.resolve('nodejs-whisper/package.json'));
-    const rel = [
-      'cpp/whisper.cpp/build/bin/Release/whisper-cli.exe',
-      'cpp/whisper.cpp/build/bin/Release/main.exe',
-      'cpp/whisper.cpp/build/bin/whisper-cli.exe',
-      'cpp/whisper.cpp/build/bin/whisper-cli',
-      'cpp/whisper.cpp/main.exe',
-      'cpp/whisper.cpp/main',
-    ];
-    for (const variant of ['default', 'cuda']) {
-      rel.push(`build/${variant}/Release/nodejs_whisper.node`,
-        `prebuilds/${process.platform}-${process.arch}/${variant}/nodejs_whisper.node`);
-    }
-    return rel.some((r) => fs.existsSync(path.join(pkgDir, r)));
+    const { findNativeAddon } = require('nodejs-whisper/dist/native');
+    const { getWhisperExecutablePath } = require('nodejs-whisper/dist/whisper');
+    if (findNativeAddon()) return getWhisperExecutablePath() ? 'auto' : 'native';
+    return getWhisperExecutablePath() ? 'cli' : null;
   } catch (_) {
-    return false;
+    return null;
   }
 }
 
 function isAvailable() {
-  return !!loadWhisper()?.nodewhisper && whisperBackendExists();
+  return !!whisperBackend();
 }
 
-/** Extract 16kHz mono WAV (what whisper.cpp expects). */
-function extractAudio(filePath, wav, { jobId, audioTrack, trackCount, inputArgs }) {
+/** Merge overlaps, keeping separate windows for adjacent clips. */
+function selectedAudioRanges(clips) {
+  const ranges = clips.map(({ start, end }) => {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= end) {
+      throw new Error('Invalid selected audio range.');
+    }
+    return { start, end };
+  }).sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else merged.push(range);
+  }
+  return merged;
+}
+
+function extractAudio({ filePath, audioTrack, trackCount, inputArgs, scratch }, { start, end }, jobId) {
   const mixed = audioTrack === 'mix' && trackCount > 1;
   const inputs = mixed ? Array.from({ length: trackCount }, (_, index) => `[0:a:${index}]`).join('') : '';
   const mapping = mixed
     ? ['-filter_complex', `${inputs}amix=inputs=${trackCount}:duration=longest[audio]`, '-map', '[audio]']
     : ['-map', `0:a:${Number.isSafeInteger(audioTrack) ? audioTrack : 0}`];
-  return runFfmpeg(['-hide_banner', '-nostdin', '-y', ...inputArgs, '-i', filePath, ...mapping,
-    '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { jobId });
+  return runFfmpeg(['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...inputArgs,
+    '-ss', String(start), '-i', filePath, '-t', String(end - start), ...mapping,
+    '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', path.join(scratch, 'audio.wav')], { jobId });
 }
 
-/**
- * Transcribe the whole file. Returns [{ start, end, text }] in seconds, or [] if
- * whisper is unavailable. Errors are swallowed into an empty transcript so the
- * pipeline degrades gracefully.
- */
-async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1, modelRootPath, inputArgs = [] } = {}) {
-  if (audioTrack === 'none' || !trackCount) return { available: true, segments: [] };
-  const mod = loadWhisper();
-  if (!mod?.nodewhisper) return { available: false, segments: [] };
-
-  const wav = path.join(os.tmpdir(), `sf_${randomUUID()}.wav`);
-  try {
-    await extractAudio(filePath, wav, { jobId, audioTrack, trackCount, inputArgs });
-    if (modelRootPath) fs.mkdirSync(modelRootPath, { recursive: true });
-    const result = await mod.nodewhisper(wav, {
-      modelName: model,
-      autoDownloadModelName: model,
-      modelRootPath,
-      whisperOptions: { outputInSrt: false, outputInText: false },
+function runWorker(request, jobId, signal, onProgress) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new jobs.CancelledError());
+    const worker = fork(path.join(__dirname, 'transcribe-worker.js'), [], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      execArgv: [], windowsHide: true, detached: process.platform !== 'win32',
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     });
-    if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
-    const segments = [...result.matchAll(/^\s*\[([^\]\r\n]+) --> ([^\]\r\n]+)\][ \t]*(.+)$/gm)]
-      .map(([, start, end, text]) => ({ start: toSeconds(start), end: toSeconds(end), text: text.trim() }))
-      .filter(({ start, end, text }) => Number.isFinite(start) && end > start && text);
-    return { available: true, segments };
+    let result;
+    let failure;
+    let extraction;
+    const cancel = () => {
+      if (!worker.pid) return;
+      // Native Whisper uses threads in this process. A CLI fallback can spawn descendants.
+      if (request.backend === 'native') {
+        worker.kill('SIGKILL');
+        return;
+      }
+      if (process.platform === 'win32') {
+        const taskkill = path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');
+        execFile(taskkill, ['/pid', String(worker.pid), '/t', '/f'], { windowsHide: true },
+          (error) => { if (error && worker.exitCode === null && worker.signalCode === null) worker.kill(); });
+      } else {
+        try { process.kill(-worker.pid, 'SIGKILL'); } catch (_) { /* already exited */ }
+      }
+    };
+
+    signal?.addEventListener('abort', cancel, { once: true });
+    worker.on('message', (message) => {
+      if (signal?.aborted) return;
+      if (message.progress) onProgress?.(message.progress);
+      else if (message.extract) {
+        extraction = extractAudio(request, message.extract, jobId).then(
+          () => { if (worker.connected && !signal?.aborted) worker.send({}); },
+          (error) => { if (worker.connected && !signal?.aborted) worker.send({ error: error.message }); },
+        );
+      }
+      else result = message;
+    });
+    worker.on('error', (error) => { failure = error; });
+    worker.once('close', async (code) => {
+      signal?.removeEventListener('abort', cancel);
+      await extraction;
+      if (signal?.aborted) reject(new jobs.CancelledError());
+      else if (failure || code !== 0 || !result) reject(failure || new Error(`Whisper worker exited (${code}).`));
+      else resolve(result);
+    });
+    worker.send(request);
+  });
+}
+
+/** Transcribe selected source-time ranges without blocking the editor. */
+async function transcribe(filePath, {
+  ranges, model = 'base', jobId, audioTrack = 0, trackCount = 1,
+  modelRootPath = path.join(os.tmpdir(), 'ShortForge-whisper-models'), inputArgs = [], onProgress,
+} = {}) {
+  const selected = selectedAudioRanges(ranges);
+  if (!selected.length || audioTrack === 'none' || !trackCount) return { available: true, segments: [] };
+  const backend = whisperBackend();
+  if (!backend) return { available: false, segments: [] };
+  if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
+  const signal = jobs.get(jobId)?.controller.signal;
+  let scratch;
+  try {
+    fs.mkdirSync(modelRootPath, { recursive: true });
+    scratch = fs.mkdtempSync(path.join(modelRootPath, '.transcribe-'));
+    return await runWorker({ filePath, ranges: selected, model, audioTrack, trackCount,
+      modelRootPath, inputArgs, scratch, backend }, jobId, signal, onProgress);
   } catch (err) {
-    if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
+    if (err.isCancelled) throw err;
     console.warn('[transcribe] failed:', err.message);
     return { available: true, segments: [], error: err.message };
   } finally {
-    for (const file of [wav, `${wav}.srt`]) {
-      try { fs.rmSync(file, { force: true }); } catch (_) { /* ignore */ }
-    }
+    if (scratch) await fs.promises.rm(scratch, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
   }
-}
-
-function toSeconds(timestamp) {
-  const [hours, minutes, seconds] = timestamp.replace(',', '.').split(':').map(Number);
-  return hours * 3600 + minutes * 60 + seconds;
 }
 
 /** Pick transcript text overlapping a [start,end] window. */
@@ -137,4 +166,4 @@ function writeClipSrt(segments, start, end, outPath) {
   return outPath;
 }
 
-module.exports = { isAvailable, transcribe, textForRange, writeClipSrt };
+module.exports = { isAvailable, selectedAudioRanges, transcribe, textForRange, writeClipSrt };

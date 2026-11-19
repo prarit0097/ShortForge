@@ -82,18 +82,30 @@ function checkedSegment(segment, duration) {
   return { ...segment, end: Math.min(end, duration), duration: Math.min(end, duration) - start };
 }
 
-async function localTranscript(filePath, settings, meta, jobId) {
+async function localTranscript(filePath, settings, meta, clips, jobId) {
   if (settings.audioTrack === 'none' || !meta.hasAudio || !transcribe.isAvailable()) return [];
+  const ranges = transcribe.selectedAudioRanges(clips);
+  if (!ranges.length) return [];
   const source = fs.statSync(filePath);
-  const revision = JSON.stringify([source.size, source.mtimeMs, settings.whisperModel, settings.audioTrack ?? 0]);
+  const revision = JSON.stringify([source.size, source.mtimeMs, settings.whisperModel, settings.audioTrack ?? 0, ranges]);
   const hash = crypto.createHash('sha256').update(revision).digest('hex').slice(0, 20);
-  const cache = path.join(workDirFor(filePath), `transcript-${hash}.json`);
+  const cache = path.join(workDirFor(filePath), `selected-transcript-${hash}.json`);
   try { return JSON.parse(fs.readFileSync(cache, 'utf8')); } catch (_) { /* cache miss */ }
-  progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing selected audio locally…');
+  let lastMessage;
+  progress(jobId, STAGES.TRANSCRIBE, 0, 'Preparing local captions…');
   const result = await transcribe.transcribe(filePath, {
-    model: settings.whisperModel, jobId, audioTrack: settings.audioTrack, trackCount: meta.audioTracks.length,
+    ranges, model: settings.whisperModel, jobId, audioTrack: settings.audioTrack, trackCount: meta.audioTracks.length,
     modelRootPath: path.join(app.getPath('userData'), 'whisper-models'),
     inputArgs: linkInputArgs(filePath),
+    onProgress({ phase, processed, total, completed, count }) {
+      const percent = completed === count ? 100 : Math.min(99, Math.floor(processed / total * 100));
+      const status = phase === 'extracting' ? 'Extracting selected audio' : 'Transcribing selected audio';
+      const message = phase === 'model' ? 'Downloading the Whisper model…'
+        : `${status}… ${percent}% · ${completed}/${count} audio ranges done`;
+      if (message === lastMessage) return;
+      lastMessage = message;
+      progress(jobId, STAGES.TRANSCRIBE, percent, message);
+    },
   });
   if (jobs.isCancelled(jobId)) throw new jobs.CancelledError();
   const segments = result.segments || [];
@@ -101,7 +113,9 @@ async function localTranscript(filePath, settings, meta, jobId) {
     fs.mkdirSync(path.dirname(cache), { recursive: true });
     fs.writeFileSync(cache, JSON.stringify(segments), 'utf8');
   } catch (_) { /* keep rendering even when the cache is unwritable */ }
-  progress(jobId, STAGES.TRANSCRIBE, 100, segments.length ? `${segments.length} transcript lines` : 'No speech detected');
+  if (!result.error) {
+    progress(jobId, STAGES.TRANSCRIBE, 100, segments.length ? `${segments.length} transcript lines` : 'No speech detected');
+  }
   return segments;
 }
 
@@ -358,7 +372,9 @@ function registerIpc(winGetter) {
       const inputArgs = linkInputArgs(filePath);
       let transcriptSegs = [];
       if (shareTranscript && settings.audioTrack !== 'none' && transcribe.isAvailable()) {
-        transcriptSegs = await localTranscript(filePath, settings, await probe(filePath, { jobId, inputArgs }), jobId);
+        const meta = await probe(filePath, { jobId, inputArgs });
+        transcriptSegs = await localTranscript(filePath, settings, meta,
+          candidates.map((clip) => checkedSegment(clip, meta.duration)), jobId);
       }
       if (jobs.isCancelled(jobId)) return { cancelled: true };
 
@@ -409,12 +425,13 @@ function registerIpc(winGetter) {
       const inputArgs = linkInputArgs(filePath);
       const meta = await probe(filePath, { jobId, inputArgs });
       if (jobs.isCancelled(jobId)) return { cancelled: true };
+      const selected = segments.map((segment) => checkedSegment(segment, meta.duration));
       const workDir = workDirFor(filePath);
       const clipsDir = path.join(workDir, 'clips');
       fs.mkdirSync(clipsDir, { recursive: true });
 
       // Load transcript for caption burn-in if requested.
-      const transcriptSegs = settings.burnCaptions ? await localTranscript(filePath, settings, meta, jobId) : [];
+      const transcriptSegs = settings.burnCaptions ? await localTranscript(filePath, settings, meta, selected, jobId) : [];
       const captionsSkipped = !!settings.burnCaptions && transcriptSegs.length === 0;
 
       const burnTitle = settings.aiEnabled && settings.burnTitle !== false;
@@ -424,8 +441,7 @@ function registerIpc(winGetter) {
 
       // Attach per-clip caption + title files. Title is what makes an AI render visibly
       // different; we skip generic placeholder titles so non-AI clips aren't tagged.
-      const prepared = segments.map((segment) => {
-        const seg = checkedSegment(segment, meta.duration);
+      const prepared = selected.map((seg) => {
         const extra = {};
         if (settings.burnCaptions && transcriptSegs.length) {
           const srtPath = path.join(sidecarDir, `seg_${seg.index}.srt`);

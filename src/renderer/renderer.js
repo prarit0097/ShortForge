@@ -29,7 +29,6 @@ const state = {
   jobId: null,
   cancelRequested: false,
   exportAttempt: null,
-  enriched: false,
   mode: 'coverage',
   sceneCount: null,
   gameplayMessage: '',
@@ -436,7 +435,6 @@ function selectVideo(meta) {
   state.video = meta;
   state.segments = [];
   state.exportAttempt = null;
-  state.enriched = false;
   state.sceneCount = null;
   state.gameplayMessage = '';
   state.drafts.clear();
@@ -503,13 +501,12 @@ function updateMode() {
 
 function switchMode(mode) {
   if (mode === state.mode) return;
-  state.drafts.set(state.mode, { segments: state.segments, enriched: state.enriched, sceneCount: state.sceneCount, gameplayMessage: state.gameplayMessage });
+  state.drafts.set(state.mode, { segments: state.segments, sceneCount: state.sceneCount, gameplayMessage: state.gameplayMessage });
   state.mode = mode;
   const draft = state.drafts.get(mode);
   state.segments = draft?.segments || [];
   state.sceneCount = draft?.sceneCount ?? null;
   state.gameplayMessage = draft?.gameplayMessage || '';
-  state.enriched = !!draft?.enriched;
   state.exportAttempt = null;
   resetThumbnails();
   editor.showSource();
@@ -529,7 +526,6 @@ function addMarker(time) {
   const index = state.segments.reduce((next, clip) => Math.max(next, clip.index + 1), 0);
   const clip = { ...range, index, peak: time, selected: true, reason: `Marked at ${fmtClock(time)}` };
   state.segments.push(clip);
-  state.enriched = false;
   renderResults();
   setStep(3, 3);
   editor.review(clip);
@@ -542,7 +538,6 @@ function editClip(index, changes, resetThumb = false) {
   if (resetThumb) {
     delete clip.thumbPath;
     clip.aiEnriched = false;
-    state.enriched = false;
     renderClips();
   }
   refreshClipCard(clip);
@@ -631,7 +626,6 @@ async function analyze() {
       state.segments = res.segments;
       state.sceneCount = res.sceneCount;
       state.exportAttempt = null;
-      state.enriched = false;
       toast(`${res.shortsCount} shorts planned from ${res.sceneCount} scene changes`, 'ok');
     }
     renderResults(res);
@@ -847,8 +841,7 @@ function updateSelCount() {
   $('selectAll').disabled = !state.segments.length || selected.length === state.segments.length;
   $('selectNone').disabled = !selected.length;
   $('selectTop').disabled = !state.segments.some((clip) => clip.viralityScore != null || clip.confidence != null);
-  $('enrichBtn').disabled = state.mode === 'gameplay'
-    ? !state.segments.some((clip) => clip.selected && isNotEnriched(clip)) : !state.segments.length;
+  $('enrichBtn').disabled = !selected.some((clip) => state.mode !== 'gameplay' || isNotEnriched(clip));
   updateStepAvailability();
 }
 
@@ -860,8 +853,8 @@ function isNotEnriched(clip) {
 async function enrich(clips) {
   if (!state.settings.aiEnabled) { toast('Turn the AI Layer ON first.', 'err'); return false; }
   if (!state.settings.hasApiKey) { toast('Add your OpenRouter API key in Settings.', 'err'); openSettings(); return false; }
-  const requested = clips ?? (state.mode === 'gameplay'
-    ? state.segments.filter((clip) => clip.selected && isNotEnriched(clip)) : state.segments);
+  const requested = clips ?? state.segments.filter((clip) =>
+    clip.selected && (state.mode !== 'gameplay' || isNotEnriched(clip)));
   if (!requested.length) return true;
   await persistSettings();
   const jobId = newJobId();
@@ -882,7 +875,6 @@ async function enrich(clips) {
       editor.refreshClip(clip);
       return clip;
     });
-    state.enriched = true;
     renderClips();
     updateSelCount();
     const enhanced = res.segments.filter((clip) => !clip.aiError).length;
@@ -909,8 +901,7 @@ async function process(index) {
 
   // If the AI layer is on but clips haven't been enhanced yet, do it now so the AI
   // titles/scores/crop actually drive the output (otherwise AI-on == AI-off).
-  const gameplay = state.mode === 'gameplay';
-  const forEnrichment = gameplay ? selected.filter(isNotEnriched) : state.enriched ? [] : state.segments;
+  const forEnrichment = selected.filter(isNotEnriched);
   if (state.settings.aiEnabled && forEnrichment.length) {
     if (!state.settings.hasApiKey) {
       toast('AI Layer is ON but no API key set. Add it in Settings, or turn AI off.', 'err');

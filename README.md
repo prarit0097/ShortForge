@@ -84,6 +84,10 @@ dependency). If it isn't installed/built on your machine, the core app still wor
 audio-transcript features are skipped. Models are selectable in Settings. The default `base`
 supports multiple languages.
 
+When you render selected clips with captions enabled, Whisper reads only those clip ranges on the
+selected audio track or mix. The progress dialog shows transcription progress and lets you stop
+Whisper mid-job.
+
 ## Local CLI and MCP
 
 The optional automation interface uses two existing, user-controlled folders for input and output. Run `npm install` first, then set the roots in PowerShell.
