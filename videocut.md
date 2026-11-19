@@ -304,22 +304,19 @@ installation. Optional captions need a compatible Whisper backend and a suitable
 
 ## 10. How to use the app (step by step)
 
-1. **Import** — Click **＋ Add Video** (or drag a file onto the dropzone). The file card shows
+1. **Import** — Click **Browse files** or drop a recording into **Open a local video**. The source card shows
    duration, resolution, fps, size, audio.
-2. **Settings (cutting)** — Set **Target / Min / Max length** (e.g. 30 / 20 / 50 s), pick the
-   **Output ratio** (e.g. 9:16), **Reframe** (Blur pad), and **Scene scan** (Accurate).
-   Optionally tick **Burn AI hook title** / **Burn AI captions**.
-3. **Analyze** — Click **Analyze video →**. The app detects scenes and shows **"N shorts
-   planned"** with a thumbnail grid — *before* any cutting.
+2. **Clip setup** — Set **Target length**, pick the **Output ratio** and **Reframe** mode, or use a preset.
+   Expand **Advanced settings** for clip length bounds, scene scan, and optional filters or captions.
+3. **Analyze** — Click **Plan clips**. The app detects scenes and opens **Review clips** with a count and thumbnail grid before cutting.
 4. **(Optional) AI** — Turn on **AI Layer** in the sidebar, set your OpenRouter key in
-   **⚙ Settings**, then click **✨ Enhance with AI** to score/title every clip. (If AI is on,
+   **App settings**, then click **Enhance with AI** to score and title clips. (If AI is on,
    processing will auto-enhance for you.)
-5. **Select** — Tick/untick clips, rename titles inline, or use **Select all / None / Top 10
-   by score**.
-6. **Process** — Click **▶ Start processing**. Clips are cut with reframing (+ AI title/captions
+5. **Select** — Tick or untick clips, rename titles inline, or use **Select all**, **Clear selection**, or **Select top 10**.
+6. **Render** — Click **Render selected**. Clips are cut with reframing (+ AI title/captions
    if enabled), 2 at a time, with a live progress bar. The results show each failed clip and its
    error. Retry processes the selected clips that still need a render.
-7. **Download** — Click **⬇ Batch download selected** and choose a folder. The export reports
+7. **Export** — Click **Export selected** and choose a folder. The export reports
    completed, failed, and cancelled copies. Cancellation lets active copies finish and stops
    the remaining queue. The exporter preserves existing filenames by choosing a unique name.
 
@@ -328,7 +325,7 @@ installation. Optional captions need a compatible Whisper backend and a suitable
 1. Import a finished OBS, capture-card, or console video. **Watch recordings** can monitor an OBS recording or replay-buffer folder for new files with 10 seconds of quiet. ShortForge lists ready files and imports the one you choose.
 2. Select **Gameplay highlights** and click **Find highlights**. The local scan ranks up to 20 non-overlapping suggestions using low-resolution motion and changes in audio level. Changes in common HUD regions can boost a candidate that already has enough activity. The scan includes up to four seconds before the peak and six after. Use **Mark manually** or **Mark timestamp** in **Source preview** to add a moment yourself. If the original cannot play in the editor, **Generate playback preview** creates a short local H.264 proxy around the current position.
 3. Use **Review clip** to play the range, edit its start and end, and set its horizontal crop. The caption safe-area guide shows where to position text for vertical delivery.
-4. Choose **HUD-safe 9:16** to keep the full game frame inside a vertical canvas. Choose **Original 16:9** to keep a 16:9 recording at its original framing. For recordings with multiple audio tracks, select the game or mic track by name, mix the tracks, or mute the export. A playback proxy uses the selected track or mix.
+4. Choose **HUD-safe 9:16** to keep the full game frame inside a vertical canvas. Choose **Original framing** to keep the source aspect ratio. For recordings with multiple audio tracks, select the game or mic track by name, mix the tracks, or mute the export. A playback proxy uses the selected track or mix.
 5. Use **Render clip** for the current range. Edits flag the clip for rerendering and keep the previous render available for comparison. Batch export uses the currently rendered selections.
 6. **Save project** writes a `.shortforge` file with the source path, selections, trims, crop, titles, and output settings. An unchanged source can reopen with still-available cached renders. The source video and rendered MP4 files stay on disk separately from the project file.
 
@@ -339,7 +336,7 @@ The local score measures activity. For optional semantic labels such as chase, n
 ### Import a YouTube or direct video link
 
 1. In **Video link**, paste a public YouTube watch, Shorts, or `youtu.be` URL, or a direct HTTP(S) video URL. Pasting starts the import and the local gameplay scan. If you type the link, select **Find highlights**.
-2. To render as soon as the scan finishes, check **Auto-render HUD-safe 9:16** before pasting. ShortForge renders the suggested clips with full-width gameplay inside a vertical canvas. Review the results, then use **Batch download selected** to export to your folder.
+2. To render as soon as the scan finishes, check **Auto-render HUD-safe 9:16** before pasting. ShortForge renders the suggested clips with full-width gameplay inside a vertical canvas. Review the results, then use **Export selected** to export to your folder. Open **Import another video** to paste a different link from the workspace.
 3. Review, trim, or add a manual marker in the editor. If the scan finds no strong peaks, you can still mark a clip from the downloaded source. Cancelling a download or scan clears its staging files. After analysis, the downloaded recording stays in the app's `downloads` folder so saved projects can reopen it.
 
 The Windows x64 build includes Deno. The first YouTube import downloads a pinned `yt-dlp` executable from GitHub, verifies its SHA-256 checksum, and caches it under `tools` in the app's user-data folder. YouTube support covers individual public recordings eligible for download. Account sign-in, DRM, playlists, and active live streams are outside this flow. YouTube may return an access error for particular videos. Direct URLs must return an MP4, MOV, MKV, WebM, AVI, FLV, or MPEG-TS file. The final recording limit is 10 GiB. YouTube can temporarily use extra disk space to merge separate video and audio streams. Highlight detection and auto-render run locally and skip OpenRouter enrichment.
@@ -487,6 +484,7 @@ The server retains 32 finished jobs during its lifetime. It accepts sources up t
 | **1.2.0** | Added ranked local gameplay suggestions, monitoring for finished recordings, and limited OpenRouter enrichment with chronological still frames, a per-batch consent prompt, and optional transcript context. |
 | **1.3.0** | Added the local CLI and stdio MCP server, source-bound segment IDs, and job progress, cancellation, and result metadata for automation. Updated the optional Whisper backend and fixed subtitle timing at clip boundaries. |
 | **1.4.0** | Paste a public YouTube or direct video link to download and scan for local gameplay highlights, with optional automatic HUD-safe 9:16 rendering. |
+| **1.5.0** | Refined the desktop workspace with separate link and file import, keyboard-accessible workflow navigation, compact clip setup, visible selection counts, and native settings and progress dialogs. |
 
 ---
 
@@ -514,6 +512,8 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 **Phase 4 verification for 1.3.0.** All 47 regression tests passed. The Windows Electron smoke verified the editor, watcher, and AI consent via the real preload and IPC. The mocked OpenRouter service received no request on decline and three still frames on approval. Transcript text stayed out of the request with sharing off. `npm run dist -- --publish never` produced the unsigned NSIS installer. The unpacked `ShortForge.exe` passed a real MCP stdio handshake and rendered a playable 1080×1920 H.264 clip. The packaged Whisper backend also produced a timed transcript from synthetic speech. `npm audit --omit=dev` reported zero findings in the production npm dependency tree. A full audit continues to report findings in Electron and build tooling.
 
 **Link import verification for 1.4.0.** All 50 regression tests passed. The Electron smoke test pasted a direct HTTP video, verified two suggestions, and repeated the import with auto-render enabled. FFprobe and FFmpeg confirmed playable 1080×1920 output. A public YouTube video was downloaded and scanned in both development and a packaged build. The packaged settings produced a playable 1080×1920 H.264 clip. One YouTube request returned HTTP 403 and a normal repeat request succeeded. Cancellation and staging cleanup are covered by tests against a partial HTTP response.
+
+**Workspace verification for 1.5.0.** All 50 regression tests passed. Windows Electron smoke tests covered the default 1280×860 window and minimum 980×680 window, including video import, highlight review, rerendering, export, and project reopen. They also checked the native settings dialog, focus restoration, advanced settings disclosure, workflow navigation, and selection counts. The import and editor layouts were visually reviewed in Electron. Representative primary button text, muted labels, input placeholders, and focus outlines met the contrast targets.
 
 **This is a standing rule for this project:**
 

@@ -71,6 +71,7 @@
       $('editorInspector').classList.toggle('hidden', !isClip);
       $('editorLayout').classList.toggle('has-clip', isClip);
       $('editorSource').classList.toggle('hidden', !isClip);
+      $('editorBackToClips').classList.toggle('hidden', !isClip);
       $('editorTitle').textContent = isClip ? `Edit clip ${clip.index + 1}` : 'Source preview';
       $('editorMark').classList.toggle('hidden', !gameplay || isClip);
       $('editorRender').textContent = clip?.outputPath ? 'Rerender clip' : 'Render clip';

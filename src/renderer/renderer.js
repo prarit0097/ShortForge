@@ -9,16 +9,16 @@ const $ = (id) => document.getElementById(id);
 const api = window.api;
 
 const ASPECT_OPTIONS = {
-  '9:16': '9:16 — Reels / Shorts / TikTok',
-  '16:9': '16:9 — YouTube / Landscape',
-  '1:1': '1:1 — Square / Instagram',
-  '4:5': '4:5 — Instagram Portrait',
-  original: 'Original — no reframe',
+  '9:16': '9:16 vertical',
+  '16:9': '16:9 landscape',
+  '1:1': '1:1 square',
+  '4:5': '4:5 portrait',
+  original: 'Original',
 };
 const REFRAME_OPTIONS = {
-  crop: 'Fill screen — crop sides (full screen)',
-  smart: 'AI smart fill — keep subject (needs AI)',
-  blur: 'Blurred pad — full scene with bars',
+  crop: 'Fill and crop',
+  smart: 'AI smart crop',
+  blur: 'Fit with blur',
 };
 
 const state = {
@@ -66,15 +66,35 @@ function toast(msg, kind = '') {
   const t = document.createElement('div');
   t.className = `toast ${kind}`;
   t.textContent = msg;
-  document.body.appendChild(t);
+  $('toastRegion').replaceChildren(t);
   setTimeout(() => t.remove(), 3600);
 }
-function setStep(n, doneUpTo) {
+function updateStepAvailability() {
+  const ready = state.segments.some((clip) => !needsRender(clip));
+  for (const step of $('stepNav').querySelectorAll('button')) {
+    const n = Number(step.dataset.step);
+    step.disabled = (n > 1 && !state.video) || (n === 3 && $('resultsPanel').classList.contains('hidden')) || (n === 5 && !ready);
+  }
+}
+
+function setStep(n, doneUpTo = n) {
   document.querySelectorAll('.step').forEach((el) => {
     const s = Number(el.dataset.step);
     el.classList.toggle('active', s === n);
-    el.classList.toggle('done', s < (doneUpTo || n));
+    el.classList.toggle('done', s < doneUpTo);
+    if (s === n) el.setAttribute('aria-current', 'step');
+    else el.removeAttribute('aria-current');
   });
+  updateStepAvailability();
+}
+
+function visitStep(button) {
+  if (!button || button.disabled) return;
+  const target = $(button.dataset.target);
+  target.scrollIntoView({ block: 'start' });
+  target.focus({ preventScroll: true });
+  const completed = state.segments.some((clip) => !needsRender(clip)) ? 5 : state.segments.length ? 3 : state.video ? 2 : 1;
+  setStep(Number(button.dataset.step), completed);
 }
 function newJobId() {
   state.jobId = `job_${Date.now()}_${Math.floor(performance.now())}`;
@@ -261,19 +281,23 @@ async function persistSettings() {
 function showProgress(title) {
   state.cancelRequested = false;
   $('progTitle').textContent = title;
-  $('barFill').style.width = '0%';
+  $('jobProgress').value = 0;
   $('progMsg').textContent = 'Starting…';
   $('cancelBtn').disabled = false;
-  $('progressOverlay').classList.remove('hidden');
+  const dialog = $('progressOverlay');
+  dialog.classList.remove('hidden');
+  if (!dialog.open) dialog.showModal();
 }
 function hideProgress() {
   state.jobId = null;
-  $('progressOverlay').classList.add('hidden');
+  const dialog = $('progressOverlay');
+  if (dialog.open) dialog.close();
+  dialog.classList.add('hidden');
 }
 
 api.onProgress((d) => {
   if (d.jobId !== state.jobId) return;
-  $('barFill').style.width = `${d.percent}%`;
+  $('jobProgress').value = d.percent;
   if (!state.cancelRequested) $('progMsg').textContent = d.message || '';
 });
 
@@ -284,6 +308,7 @@ async function addVideo() {
   const f = files[0];
   if (f.error) { toast(`Could not read file: ${f.error}`, 'err'); return; }
   selectVideo(f);
+  visitStep($('stepNav').querySelector('[data-step="2"]'));
 }
 
 async function importVideoLink() {
@@ -293,6 +318,7 @@ async function importVideoLink() {
   if (!input.reportValidity()) return;
   const autoRender = $('linkAutoRender').checked;
   const jobId = newJobId();
+  let imported = false;
   status.textContent = '';
   showProgress('Importing link and finding highlights');
   try {
@@ -314,10 +340,12 @@ async function importVideoLink() {
     setStep(3, 3);
     if (result.results) showRenderResults(result, result.segments);
     if (result.renderError) showBatchStatus('renderStatus', result.renderError);
+    imported = true;
   } catch (error) {
     status.textContent = error.message.replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
   } finally {
     hideProgress();
+    if (imported) visitStep($('stepNav').querySelector('[data-step="3"]'));
   }
 }
 
@@ -413,19 +441,22 @@ function selectVideo(meta) {
   state.gameplayMessage = '';
   state.drafts.clear();
 
-  $('dropzone').classList.add('hidden');
+  $('workspace').dataset.hasSource = 'true';
+  $('sourceOptions').open = false;
   $('fileCard').classList.remove('hidden');
   $('fileName').textContent = meta.name;
+  $('fileName').title = meta.name;
   $('fileStats').innerHTML = `
-    <span>⏱ <b>${fmtDuration(meta.duration)}</b></span>
-    <span>📐 <b>${meta.width}×${meta.height}</b></span>
-    <span>🎞 <b>${meta.fps} fps</b></span>
-    <span>💾 <b>${fmtSize(meta.sizeBytes)}</b></span>
-    <span>🔊 <b>${meta.hasAudio ? meta.audioCodec : 'no audio'}</b></span>`;
+    <span>Duration <b>${fmtDuration(meta.duration)}</b></span>
+    <span><b>${meta.width}×${meta.height}</b></span>
+    <span><b>${meta.fps} fps</b></span>
+    <span><b>${fmtSize(meta.sizeBytes)}</b></span>
+    <span>Audio <b>${meta.hasAudio ? meta.audioCodec : 'none'}</b></span>`;
   $('controlsPanel').classList.remove('hidden');
   $('saveProjectBtn').classList.remove('hidden');
   $('pageTitle').textContent = meta.name;
-  $('pageSub').textContent = 'Preview the recording or choose how to plan your clips.';
+  $('pageTitle').title = meta.name;
+  $('pageSub').textContent = 'Preview your source and choose how to find clips.';
   fillAudioTracks();
   editor.setSource(meta);
   updateMode();
@@ -458,7 +489,8 @@ function updateMode() {
   const gameplay = state.mode === 'gameplay';
   $('clipMode').value = state.mode;
   document.querySelectorAll('[data-coverage]').forEach((field) => field.classList.toggle('hidden', gameplay));
-  $('analyzeBtn').textContent = gameplay ? 'Find highlights' : 'Analyze video →';
+  $('analyzeBtn').textContent = gameplay ? 'Find highlights' : 'Plan clips';
+  $('targetLengthLabel').textContent = gameplay ? 'Manual clip length (sec)' : 'Target length (sec)';
   $('manualMarkBtn').classList.toggle('hidden', !gameplay);
   $('analyzeHint').textContent = gameplay
     ? 'Scan locally for motion and sound peaks, or mark a moment yourself.'
@@ -575,6 +607,7 @@ async function analyze() {
   const gameplay = state.mode === 'gameplay';
   await persistSettings();
   const jobId = newJobId();
+  let planned = false;
   showProgress(gameplay ? 'Finding highlights locally' : 'Analyzing video');
   try {
     const res = await api.analyze({ filePath: state.video.path, settings: gatherSettings(), jobId });
@@ -603,10 +636,12 @@ async function analyze() {
     }
     renderResults(res);
     setStep(3, 3);
+    planned = true;
   } catch (err) {
     toast(`Analyze failed: ${err.message}`, 'err');
   } finally {
     hideProgress();
+    if (planned) visitStep($('stepNav').querySelector('[data-step="3"]'));
   }
 }
 
@@ -617,7 +652,7 @@ function renderResults(res) {
     ? state.gameplayMessage || 'Scan locally or mark a moment in the recording.'
     : `${fmtDuration(totalDur)}${state.sceneCount == null ? '' : ` · ${state.sceneCount} scene changes`} · full coverage plan`;
   $('summary').innerHTML = `
-    <div class="big-num">${state.segments.length} ${state.segments.length === 1 ? 'clip' : 'clips'}</div>
+    <p class="meta clip-total">${state.segments.length} ${state.segments.length === 1 ? 'clip' : 'clips'}</p>
     <div class="meta">${planLabel}</div>
     <div class="meta" id="renderStatus" aria-live="polite"></div>
     <div class="meta" id="exportStatus" aria-live="polite"></div>`;
@@ -768,7 +803,10 @@ function renderClips() {
       label.textContent = tag;
       card.querySelector('.clip-tags').appendChild(label);
     }
-    card.querySelector('.review-clip').addEventListener('click', () => editor.review(seg));
+    card.querySelector('.review-clip').addEventListener('click', () => {
+      setStep(3, state.segments.some((clip) => !needsRender(clip)) ? 5 : 3);
+      editor.review(seg);
+    });
     const reveal = card.querySelector('.reveal-clip');
     reveal.classList.toggle('hidden', !seg.outputPath);
     reveal.addEventListener('click', () => api.showItem(seg.outputPath));
@@ -792,18 +830,26 @@ function fmtClock(sec) {
 }
 function needsRender(clip) { return !clip.outputPath || clip.needsRender; }
 function updateSelCount() {
-  const pending = state.segments.filter((s) => s.selected && needsRender(s));
+  const selected = state.segments.filter((s) => s.selected);
+  const pending = selected.filter(needsRender);
+  const ready = selected.length - pending.length;
   const processBtn = $('processBtn');
   const retrying = pending.length > 0 && pending.every((s) => s.renderStatus);
-  processBtn.firstChild.nodeValue = retrying ? '↻ Retry processing (' : '▶ Start processing (';
+  processBtn.firstChild.nodeValue = retrying ? 'Retry selected (' : 'Render selected (';
   $('selCount').textContent = pending.length;
   processBtn.classList.toggle('hidden', !state.segments.some(needsRender));
   processBtn.disabled = !pending.length;
   const downloadBtn = $('downloadBtn');
   downloadBtn.classList.toggle('hidden', !state.segments.some((s) => !needsRender(s)));
   downloadBtn.disabled = !state.segments.some((s) => s.selected && !needsRender(s));
+  $('selectionStatus').textContent = `${selected.length} of ${state.segments.length} selected${ready ? ` · ${ready} ready to export` : ''}`;
+  $('batchActions').classList.toggle('hidden', !state.segments.length);
+  $('selectAll').disabled = !state.segments.length || selected.length === state.segments.length;
+  $('selectNone').disabled = !selected.length;
+  $('selectTop').disabled = !state.segments.some((clip) => clip.viralityScore != null || clip.confidence != null);
   $('enrichBtn').disabled = state.mode === 'gameplay'
     ? !state.segments.some((clip) => clip.selected && isNotEnriched(clip)) : !state.segments.length;
+  updateStepAvailability();
 }
 
 /* ---------------- AI enrich ---------------- */
@@ -967,14 +1013,28 @@ async function batchDownload() {
 }
 
 /* ---------------- settings modal ---------------- */
+let settingsReturnFocus;
 function openSettings() {
-  $('settingsModal').classList.remove('hidden');
+  const dialog = $('settingsModal');
+  if (dialog.open) return;
+  settingsReturnFocus = document.activeElement === document.body ? $('openSettings') : document.activeElement;
+  dialog.classList.remove('hidden');
+  dialog.showModal();
   if (state.settings.hasApiKey && (!state.models || !state.models.length)) loadModels();
 }
-function closeSettings() { $('settingsModal').classList.add('hidden'); }
+function closeSettings() {
+  const dialog = $('settingsModal');
+  dialog.close();
+  dialog.classList.add('hidden');
+  settingsReturnFocus?.focus();
+}
 
 /* ---------------- wire up ---------------- */
 function wire() {
+  $('stepNav').addEventListener('click', (event) => visitStep(event.target.closest('button')));
+  $('editorBackToClips').addEventListener('click', () => visitStep($('stepNav').querySelector('[data-step="3"]')));
+  $('settingsModal').addEventListener('cancel', (event) => { event.preventDefault(); closeSettings(); });
+  $('progressOverlay').addEventListener('cancel', (event) => { event.preventDefault(); $('cancelBtn').click(); });
   $('addVideoBtn').addEventListener('click', addVideo);
   $('videoLinkForm').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -992,16 +1052,19 @@ function wire() {
   $('dropzone').addEventListener('click', addVideo);
   $('changeFile').addEventListener('click', () => {
     state.video = null;
+    state.segments = [];
     editor.setSource(null);
     resetThumbnails();
-    $('dropzone').classList.remove('hidden');
+    delete $('workspace').dataset.hasSource;
+    $('sourceOptions').open = true;
     $('fileCard').classList.add('hidden');
     $('controlsPanel').classList.add('hidden');
     $('resultsPanel').classList.add('hidden');
     $('saveProjectBtn').classList.add('hidden');
-    $('pageTitle').textContent = 'Import a video or movie';
-    $('pageSub').textContent = 'Drop a recording or browse to choose a video.';
-    $('addVideoBtn').focus();
+    $('pageTitle').textContent = 'Add a video';
+    $('pageTitle').removeAttribute('title');
+    $('pageSub').textContent = 'Import a recording to find highlights or split the full video.';
+    $('videoLink').focus();
     setStep(1, 1);
   });
 

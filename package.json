@@ -1,7 +1,7 @@
 {
   "name": "shortforge",
   "productName": "ShortForge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Windows video editor for scene coverage and gameplay highlights with local CLI and MCP automation.",
   "main": "src/main/main.js",
   "author": "ShortForge",

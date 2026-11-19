@@ -8,32 +8,30 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="workspace">
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">SF</div>
         <div class="brand-text">
           <strong>ShortForge</strong>
-          <span>scene-by-scene shorts</span>
         </div>
       </div>
 
-      <nav class="steps" id="stepNav">
-        <div class="step" data-step="1"><span class="dot">1</span> Import</div>
-        <div class="step" data-step="2"><span class="dot">2</span> Settings</div>
-        <div class="step" data-step="3"><span class="dot">3</span> Analyze</div>
-        <div class="step" data-step="4"><span class="dot">4</span> Process</div>
-        <div class="step" data-step="5"><span class="dot">5</span> Download</div>
+      <nav class="steps" id="stepNav" aria-label="Editing workflow">
+        <button class="step active" type="button" data-step="1" data-target="importPanel" aria-current="step"><span class="dot" aria-hidden="true">1</span> Source</button>
+        <button class="step" type="button" data-step="2" data-target="setupTitle" disabled><span class="dot" aria-hidden="true">2</span> Clip setup</button>
+        <button class="step" type="button" data-step="3" data-target="resultsTitle" disabled><span class="dot" aria-hidden="true">3</span> Review</button>
+        <button class="step" type="button" data-step="5" data-target="batchActions" disabled><span class="dot" aria-hidden="true">4</span> Export</button>
       </nav>
 
       <div class="sidebar-foot">
-        <button class="ai-toggle" id="aiToggle" title="Toggle the OpenRouter AI layer">
+        <button class="ai-toggle" id="aiToggle" aria-label="AI enrichment" title="Toggle the OpenRouter AI layer">
           <span class="ai-led"></span>
-          <span class="ai-label">AI Layer</span>
+          <span class="ai-label">AI layer</span>
           <span class="ai-state" id="aiState">OFF</span>
         </button>
-        <button class="ghost-btn" id="openSettings">⚙ Settings</button>
+        <button class="ghost-btn" id="openSettings" type="button">App settings</button>
         <div class="hw-badge" id="hwBadge">encoder: detecting…</div>
       </div>
     </aside>
@@ -42,55 +40,63 @@
     <main class="main">
       <header class="topbar">
         <div>
-          <h1 id="pageTitle">Import a video or movie</h1>
-          <p class="sub" id="pageSub">Drop a file or browse. Supports 1–10 GB files. Everything stays on your PC.</p>
+          <h1 id="pageTitle">Add a video</h1>
+          <p class="sub" id="pageSub">Import a recording to find highlights or split the full video.</p>
         </div>
         <div class="topbar-actions">
           <button class="ghost-btn" id="openProjectBtn" type="button">Open project</button>
           <button class="ghost-btn hidden" id="saveProjectBtn" type="button">Save project</button>
-          <button class="primary-btn" id="addVideoBtn">＋ Add Video</button>
+          <button class="ghost-btn" id="addVideoBtn" type="button">Browse files</button>
         </div>
       </header>
 
       <section class="content" id="content">
 
         <!-- 1. Import / dropzone -->
-        <div class="panel" id="importPanel">
-          <form id="videoLinkForm" class="video-link-form">
-            <label class="field" for="videoLink"><span>Video link</span>
-              <input id="videoLink" type="url" placeholder="Paste a YouTube or direct video link" aria-describedby="videoLinkStatus" required />
-            </label>
-            <button class="ghost-btn" type="submit">Find highlights</button>
-            <label class="field checkbox"><input id="linkAutoRender" type="checkbox" />
-              <span>Auto-render HUD-safe 9:16</span>
-            </label>
-            <p id="videoLinkStatus" class="hint" role="status"></p>
-          </form>
-          <div class="dropzone" id="dropzone">
-            <div class="dz-icon">🎬</div>
-            <h2>Drop your video or movie here</h2>
-            <p>or click <span class="link">Add Video</span> · MP4, MKV, MOV, AVI, WEBM…</p>
-          </div>
+        <section class="panel" id="importPanel" tabindex="-1" aria-label="Video source">
           <div class="file-card hidden" id="fileCard">
-            <div class="thumb-fallback" id="fileThumb">🎞️</div>
             <div class="file-meta">
-              <strong id="fileName">—</strong>
+              <strong id="fileName"></strong>
               <div class="meta-row" id="fileStats"></div>
             </div>
-            <button class="ghost-btn" id="changeFile">Change</button>
+            <button class="ghost-btn" id="changeFile" type="button">Clear source</button>
           </div>
+          <details class="source-options" id="sourceOptions" open>
+            <summary>Import another video</summary>
+            <div class="source-grid">
+              <form id="videoLinkForm" class="video-link-form" aria-label="Import from a video link">
+                <label class="field" for="videoLink"><span>Video link</span>
+                  <input id="videoLink" type="url" placeholder="Paste a YouTube or direct video link" aria-describedby="videoLinkHint videoLinkStatus" required />
+                </label>
+                <p id="videoLinkHint" class="hint">Pasting a link starts the download and highlight scan.</p>
+                <label class="field checkbox"><input id="linkAutoRender" type="checkbox" />
+                  <span>Auto-render HUD-safe 9:16</span>
+                </label>
+                <button class="primary-btn" type="submit">Find highlights</button>
+                <p id="videoLinkStatus" class="hint" role="status"></p>
+              </form>
+              <button class="dropzone" id="dropzone" type="button">
+                <span class="drop-title">Open a local video</span>
+                <span>Drop a recording here or browse files</span>
+                <span class="drop-formats">MP4, MKV, MOV, WebM, and more</span>
+              </button>
+            </div>
+          </details>
           <div class="recording-watch">
             <button class="ghost-btn" id="watchRecordingsBtn" type="button">Watch recordings</button>
             <button class="ghost-btn hidden" id="stopWatchingBtn" type="button">Stop watching</button>
             <p class="hint" id="watchStatus" role="status">Choose an OBS or capture folder to see new recordings.</p>
           </div>
           <ul class="recording-list hidden" id="availableRecordings" aria-label="Recordings ready to import"></ul>
-        </div>
+        </section>
 
         <section class="panel hidden" id="editorPanel" aria-labelledby="editorTitle">
           <div class="editor-head">
             <h2 id="editorTitle" tabindex="-1">Source preview</h2>
-            <button class="ghost-btn hidden" id="editorSource" type="button">Back to source</button>
+            <div class="editor-actions editor-navigation">
+              <button class="ghost-btn hidden" id="editorSource" type="button">Back to source</button>
+              <button class="ghost-btn hidden" id="editorBackToClips" type="button">Back to clips</button>
+            </div>
           </div>
           <div class="editor-layout" id="editorLayout">
             <div class="editor-playback">
@@ -131,7 +137,7 @@
 
         <!-- 2. Settings / controls -->
         <div class="panel hidden" id="controlsPanel">
-          <h3 class="panel-title">Cutting settings</h3>
+          <h2 class="panel-title" id="setupTitle" tabindex="-1">Clip setup</h2>
           <div class="editor-settings">
             <label class="field">
               <span>Mode</span>
@@ -146,21 +152,13 @@
             </label>
             <div class="preset-group" aria-label="Output presets" role="group">
               <button class="ghost-btn" id="presetHudSafe" type="button" aria-pressed="false">HUD-safe 9:16</button>
-              <button class="ghost-btn" id="presetOriginal" type="button" aria-pressed="false">Original 16:9</button>
+              <button class="ghost-btn" id="presetOriginal" type="button" aria-pressed="false">Original framing</button>
             </div>
           </div>
           <div class="grid">
             <label class="field">
-              <span>Target length (sec)</span>
+              <span id="targetLengthLabel">Target length (sec)</span>
               <input type="number" id="targetLen" min="3" max="600" value="30" />
-            </label>
-            <label class="field" data-coverage>
-              <span>Min (sec)</span>
-              <input type="number" id="minLen" min="2" max="600" value="20" />
-            </label>
-            <label class="field" data-coverage>
-              <span>Max (sec)</span>
-              <input type="number" id="maxLen" min="3" max="600" value="50" />
             </label>
             <label class="field">
               <span>Output ratio</span>
@@ -173,16 +171,28 @@
             <label class="field">
               <span>Output quality</span>
               <select id="outputQuality">
-                <option value="high">High — near-original (default)</option>
-                <option value="balanced">Balanced — faster, smaller</option>
-                <option value="max">Max — best, slowest</option>
+                <option value="high">High</option>
+                <option value="balanced">Balanced</option>
+                <option value="max">Maximum</option>
               </select>
+            </label>
+          </div>
+          <details class="advanced-options" id="advancedOptions">
+            <summary>Advanced settings</summary>
+            <div class="grid">
+            <label class="field" data-coverage>
+              <span>Minimum length (sec)</span>
+              <input type="number" id="minLen" min="2" max="600" value="20" />
+            </label>
+            <label class="field" data-coverage>
+              <span>Maximum length (sec)</span>
+              <input type="number" id="maxLen" min="3" max="600" value="50" />
             </label>
             <label class="field" data-coverage>
               <span>Scene scan</span>
               <select id="scanMode">
                 <option value="accurate">Accurate (scene detect)</option>
-                <option value="fast">Fast (keyframes — huge files)</option>
+                <option value="fast">Fast (keyframes)</option>
               </select>
             </label>
             <label class="field" data-coverage>
@@ -201,7 +211,8 @@
               <input type="checkbox" id="burnCaptions" />
               <span>Burn captions (needs local Whisper)</span>
             </label>
-          </div>
+            </div>
+          </details>
           <div class="panel-actions">
             <button class="primary-btn" id="analyzeBtn">Analyze video →</button>
             <button class="ghost-btn hidden" id="manualMarkBtn" type="button">Mark manually</button>
@@ -212,20 +223,24 @@
         <!-- 3/4. Results -->
         <div class="panel hidden" id="resultsPanel">
           <div class="results-head">
-            <div class="summary" id="summary"></div>
+            <div>
+              <h2 class="panel-title" id="resultsTitle" tabindex="-1">Review clips</h2>
+              <div class="summary" id="summary"></div>
+            </div>
             <div class="bulk-actions">
               <button class="chip" id="selectAll">Select all</button>
-              <button class="chip" id="selectNone">None</button>
-              <button class="chip" id="selectTop">Top 10 by score</button>
-              <button class="chip" id="enrichBtn" title="Analyze every clip with AI">✨ Enhance with AI</button>
+              <button class="chip" id="selectNone">Clear selection</button>
+              <button class="chip" id="selectTop">Select top 10</button>
+              <button class="chip" id="enrichBtn">Enhance with AI</button>
             </div>
           </div>
           <p class="hint ai-disclosure hidden" id="aiDisclosure"></p>
-          <div class="clip-grid" id="clipGrid"></div>
-          <div class="panel-actions sticky-actions">
-            <button class="primary-btn big" id="processBtn">▶ Start processing (<span id="selCount">0</span> shorts)</button>
-            <button class="success-btn big hidden" id="downloadBtn">⬇ Batch download selected</button>
+          <div class="panel-actions batch-actions" id="batchActions" tabindex="-1" aria-label="Render and export">
+            <p id="selectionStatus" class="hint" role="status"></p>
+            <button class="primary-btn" id="processBtn">Render selected (<span id="selCount">0</span>)</button>
+            <button class="success-btn hidden" id="downloadBtn">Export selected</button>
           </div>
+          <div class="clip-grid" id="clipGrid"></div>
         </div>
 
       </section>
@@ -233,21 +248,21 @@
   </div>
 
   <!-- Progress overlay -->
-  <div class="overlay hidden" id="progressOverlay">
+  <dialog class="overlay hidden" id="progressOverlay" aria-labelledby="progTitle">
     <div class="progress-card">
       <h3 id="progTitle">Working…</h3>
-      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
-      <p class="prog-msg" id="progMsg">Starting…</p>
-      <button class="ghost-btn danger" id="cancelBtn">Cancel</button>
+      <progress id="jobProgress" max="100" value="0" aria-labelledby="progTitle"></progress>
+      <p class="prog-msg" id="progMsg" role="status">Starting…</p>
+      <button class="ghost-btn danger" id="cancelBtn" autofocus>Cancel</button>
     </div>
-  </div>
+  </dialog>
 
   <!-- Settings modal -->
-  <div class="overlay hidden" id="settingsModal">
+  <dialog class="overlay hidden" id="settingsModal" aria-labelledby="settingsTitle">
     <div class="modal">
       <div class="modal-head">
-        <h3>Settings — AI &amp; Performance</h3>
-        <button class="icon-btn" id="closeSettings">✕</button>
+        <h3 id="settingsTitle">App settings</h3>
+        <button class="ghost-btn" id="closeSettings" autofocus>Close</button>
       </div>
       <div class="modal-body">
         <section class="set-section">
@@ -268,7 +283,7 @@
           </label>
           <div class="model-head">
             <span>Models</span>
-            <button class="ghost-btn small" id="loadModels" type="button">🔄 Load models &amp; prices</button>
+            <button class="ghost-btn small" id="loadModels" type="button">Load models and prices</button>
             <em class="model-status" id="modelStatus"></em>
           </div>
           <div class="grid two">
@@ -286,13 +301,13 @@
           <label class="field">
             <span>Whisper model (transcript) <em id="whisperState"></em></span>
             <select id="whisperModel">
-              <option value="tiny">tiny — multilingual, fastest</option>
-              <option value="base">base — multilingual, balanced</option>
-              <option value="small">small — multilingual, accurate</option>
-              <option value="medium">medium — multilingual, best (slow)</option>
-              <option value="tiny.en">tiny.en — English only</option>
-              <option value="base.en">base.en — English only</option>
-              <option value="small.en">small.en — English only</option>
+              <option value="tiny">tiny (multilingual, fastest)</option>
+              <option value="base">base (multilingual, balanced)</option>
+              <option value="small">small (multilingual, accurate)</option>
+              <option value="medium">medium (multilingual, slowest)</option>
+              <option value="tiny.en">tiny.en (English only)</option>
+              <option value="base.en">base.en (English only)</option>
+              <option value="small.en">small.en (English only)</option>
             </select>
           </label>
         </section>
@@ -320,8 +335,9 @@
         <button class="primary-btn" id="saveSettings">Done</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
+  <div id="toastRegion" role="status" aria-live="polite"></div>
   <script src="./editor.js"></script>
   <script src="./renderer.js"></script>
 </body>

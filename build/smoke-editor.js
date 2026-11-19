@@ -92,6 +92,19 @@ async function checkRender(file, duration) {
   return meta.duration;
 }
 
+async function captureScreenshot(file) {
+  const image = await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('Screenshot did not paint')), 5000);
+    window.webContents.once('paint', (_event, _dirty, frame) => {
+      clearTimeout(deadline);
+      resolve(frame);
+    });
+    window.webContents.invalidate();
+  });
+  assert.ok(!image.isEmpty(), 'Screenshot was empty');
+  fs.writeFileSync(file, image.toPNG());
+}
+
 async function smokeHighlightsAndWatcher() {
   const fixture = path.join(workspace, 'Two bursts.mkv');
   const staged = path.join(watchDir, 'Ranked gameplay.mkv.part');
@@ -176,8 +189,8 @@ async function smoke() {
 
   registerIpc(() => window);
   window = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: Number(process.env.SHORTFORGE_SMOKE_WIDTH) || 1280,
+    height: Number(process.env.SHORTFORGE_SMOKE_HEIGHT) || 860,
     show: false,
     webPreferences: {
       preload: path.resolve(__dirname, '../src/main/preload.js'),
@@ -194,7 +207,23 @@ async function smoke() {
   });
   await window.loadFile(path.resolve(__dirname, '../src/renderer/index.html'));
   await waitFor('document.querySelector("#aspectRatio").options.length', 'Renderer settings');
+  const screenshot = process.env.SHORTFORGE_SMOKE_SCREENSHOT;
+  if (screenshot) {
+    const ext = path.extname(screenshot) || '.png';
+    await captureScreenshot(`${screenshot.replace(/\.png$/i, '')}-import${ext}`);
+  }
+  assert.equal(await runInPage('document.querySelectorAll(".step")[1].disabled'), true);
+  await click('#openSettings');
+  assert.equal(await runInPage('document.querySelector("#settingsModal").matches(":modal")'), true);
+  await runInPage('document.querySelector("#settingsModal").dispatchEvent(new Event("cancel", { cancelable: true }))');
+  assert.equal(await runInPage('document.activeElement.id'), 'openSettings');
   await click('#addVideoBtn');
+  await waitFor('document.activeElement.id === "setupTitle"', 'Focus moved to clip setup');
+  assert.equal(await runInPage('document.querySelector("#advancedOptions").open'), false);
+  await click('#advancedOptions > summary');
+  assert.equal(await runInPage('document.querySelector("#advancedOptions").open'), true);
+  await click('#advancedOptions > summary');
+  assert.equal(await runInPage('document.querySelector("#content").scrollWidth <= document.querySelector("#content").clientWidth'), true);
   await waitFor('document.querySelector("#fileName").textContent === "OBS recording.mkv"', 'Recording import');
   assert.match(await runInPage('document.querySelectorAll("#audioTrack option")[1].textContent'), /Mic audio/);
   await setValue('#clipMode', 'gameplay');
@@ -232,6 +261,9 @@ async function smoke() {
   assert.ok(fs.existsSync(first), 'Rerender removed the first playable output');
   const secondDuration = await checkRender(second, 1.3);
 
+  await click('#stepNav [data-step="5"]');
+  assert.equal(await runInPage('document.activeElement.id'), 'batchActions');
+  assert.match(await runInPage('document.querySelector("#selectionStatus").textContent'), /1 of 1 selected.*ready to export/);
   await click('#downloadBtn');
   await waitFor('document.querySelector("#exportStatus").textContent.includes("1/1 shorts exported")', 'Batch export');
   const files = fs.readdirSync(exportsDir);
@@ -248,6 +280,9 @@ async function smoke() {
   assert.equal(await runInPage('document.querySelector("#audioTrack").value'), '1');
   assert.equal(await runInPage('document.querySelector("#aspectRatio").value'), '9:16');
   await click('.review-clip');
+  await click('#editorBackToClips');
+  assert.equal(await runInPage('document.activeElement.id'), 'resultsTitle');
+  await click('.review-clip');
   assert.equal(await runInPage('document.querySelector("#editorIn").value'), '1.1');
   assert.equal(await runInPage('document.querySelector("#editorOut").value'), '2.4');
   assert.equal(await currentRender(), second);
@@ -256,22 +291,13 @@ async function smoke() {
   await waitFor('document.querySelector("#downloadBtn").disabled', 'AI output setting invalidates the prior render');
   await click('#aiToggle');
 
-  if (process.env.SHORTFORGE_SMOKE_SCREENSHOT) {
+  if (screenshot) {
     await click('#editorPlayRender');
     await waitFor(`document.querySelector('#editorVideo').videoWidth === 1080
       && document.querySelector('#editorVideo').currentTime > 0.05`, 'Reopened render playback');
     await runInPage(`document.querySelector('#editorVideo').pause();
       document.querySelector('#editorSafeZone').click();`);
-    const image = await new Promise((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error('Editor screenshot did not paint')), 5000);
-      window.webContents.once('paint', (_event, _dirty, frame) => {
-        clearTimeout(deadline);
-        resolve(frame);
-      });
-      window.webContents.invalidate();
-    });
-    assert.ok(!image.isEmpty(), 'Editor screenshot was empty');
-    fs.writeFileSync(process.env.SHORTFORGE_SMOKE_SCREENSHOT, image.toPNG());
+    await captureScreenshot(screenshot);
   }
   console.log(`Editor smoke passed: OBS import, playback preview, ${firstDuration}s and ${secondDuration}s vertical renders, export, project reopen.`);
   await smokeHighlightsAndWatcher();
@@ -293,10 +319,13 @@ async function smokeLinkImport() {
     document.querySelector('#videoLink').dispatchEvent(new ClipboardEvent('paste', { clipboardData, cancelable: true }));
   })()`);
   try {
+    await click('#sourceOptions > summary');
     await pasteLink();
     await waitFor(`document.querySelector('#fileName').textContent === 'Linked gameplay.mkv'
       && document.querySelectorAll('#clipGrid [data-clip]').length === 2`, 'Pasted direct link highlights');
+    assert.equal(await runInPage('document.activeElement.id'), 'resultsTitle');
     assert.equal(await runInPage(`document.querySelector('#downloadBtn').classList.contains('hidden')`), true);
+    await click('#sourceOptions > summary');
     await click('#linkAutoRender');
     await pasteLink();
     await waitFor(`document.querySelector('#renderStatus').textContent.includes('2/2 shorts rendered')`, 'Pasted direct link auto-render');

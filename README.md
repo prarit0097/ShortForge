@@ -55,7 +55,7 @@ npm start
 That's it. The app window opens.
 
 > The AI layer is **off by default**. Turn it on with the **AI Layer** toggle in the sidebar,
-> then add your OpenRouter key in **⚙ Settings**.
+> then add your OpenRouter key in **App settings**.
 
 ## Build a Windows installer
 
