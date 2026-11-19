@@ -14,11 +14,13 @@ const jobs = require('../jobs');
  * Full scene detection. Decodes video (no re-encode) and emits scene scores.
  * @returns {Promise<number[]>} sorted scene-change timestamps (seconds)
  */
-function detectScenes(filePath, { threshold = 0.4, jobId, totalDurationSec, onProgress } = {}) {
+function detectScenes(filePath, { threshold = 0.4, jobId, totalDurationSec, onProgress, videoStreamIndex, inputArgs = [] } = {}) {
   return new Promise((resolve, reject) => {
+    if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
     const args = [
-      '-hide_banner',
+      '-hide_banner', '-nostdin', ...inputArgs,
       '-i', filePath,
+      '-map', Number.isInteger(videoStreamIndex) ? `0:${videoStreamIndex}` : '0:V:0',
       '-filter:v', `select='gt(scene,${threshold})',showinfo`,
       '-an',
       '-f', 'null', '-',
@@ -59,14 +61,16 @@ function detectScenes(filePath, { threshold = 0.4, jobId, totalDurationSec, onPr
 }
 
 /** Fast fallback: list keyframe (I-frame) timestamps without decoding everything. */
-function detectKeyframes(filePath, { jobId } = {}) {
+function detectKeyframes(filePath, { jobId, videoStreamIndex, startTime = 0, inputArgs = [] } = {}) {
   return new Promise((resolve, reject) => {
+    if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
     const args = [
       '-v', 'error',
-      '-select_streams', 'v:0',
+      '-select_streams', Number.isInteger(videoStreamIndex) ? String(videoStreamIndex) : 'V:0',
       '-skip_frame', 'nokey',
-      '-show_entries', 'frame=pts_time',
+      '-show_entries', 'frame=best_effort_timestamp_time',
       '-of', 'csv=p=0',
+      ...inputArgs,
       filePath,
     ];
     const proc = spawn(ffprobePath, args, { windowsHide: true });
@@ -78,10 +82,10 @@ function detectKeyframes(filePath, { jobId } = {}) {
     proc.on('close', (code) => {
       if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
       if (code !== 0) return reject(new Error(`keyframe scan failed (exit ${code})`));
-      const times = out
-        .split('\n')
-        .map((l) => Number(l.trim()))
-        .filter((n) => !Number.isNaN(n))
+      const times = out.split('\n')
+        .map((line) => Number.parseFloat(line) - startTime)
+        .filter((time) => Number.isFinite(time) && time >= -0.000001)
+        .map((time) => Math.max(0, time))
         .sort((a, b) => a - b);
       resolve([...new Set(times)]);
     });

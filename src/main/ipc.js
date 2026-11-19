@@ -2,7 +2,7 @@
 
 /**
  * Registers all IPC handlers and orchestrates the pipeline:
- *   analyze (probe -> scenes -> segment -> thumbs)
+ *   analyze (probe -> scenes -> segment)
  *   enrich  (transcribe -> AI vision per clip)
  *   process (cut clips with reframe)
  *   export  (batch copy to chosen folder)
@@ -11,16 +11,16 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { pathToFileURL } = require('node:url');
 const { ipcMain, dialog, shell, app } = require('electron');
 
 const settingsStore = require('./settings');
 const jobs = require('./jobs');
 const hwaccel = require('./services/hwaccel');
 const { probe } = require('./services/probe');
-const { detectScenes, detectKeyframes } = require('./services/scenes');
-const { buildSegments } = require('./services/segmenter');
 const { extractThumbs, thumbAsDataUri } = require('./services/thumbnails');
-const cutter = require('./services/cutter');
+const { analyzeVideo, renderVideo } = require('./services/pipeline');
+const projects = require('./services/projects');
 const exporter = require('./services/exporter');
 const openrouter = require('./services/openrouter');
 const transcribe = require('./services/transcribe');
@@ -65,6 +65,13 @@ function workDirFor(filePath) {
   // basename never collide — otherwise one job's transcript/thumbs leak into another.
   const hash = crypto.createHash('sha1').update(path.resolve(filePath).toLowerCase()).digest('hex').slice(0, 8);
   return path.join(app.getPath('userData'), 'work', `${base}_${hash}`);
+}
+
+function checkedSegment(segment, duration) {
+  const { index, start, end } = segment || {};
+  if (!Number.isSafeInteger(index) || index < 0 || !Number.isFinite(start) || !Number.isFinite(end) ||
+      start < 0 || start >= end || start >= duration || end > duration + 0.01) throw new Error('Clip range is outside the recording.');
+  return { ...segment, end: Math.min(end, duration), duration: Math.min(end, duration) - start };
 }
 
 /** Bounded-concurrency map over items. */
@@ -152,51 +159,79 @@ function registerIpc(winGetter) {
   // ---- Hardware --------------------------------------------------------------
   ipcMain.handle('hw:detect', async () => hwaccel.detect());
 
+  ipcMain.handle('projects:save', async (_e, draft) => {
+    const result = await dialog.showSaveDialog(getWin(), {
+      title: 'Save ShortForge project',
+      defaultPath: `${path.basename(draft.sourcePath, path.extname(draft.sourcePath))}.shortforge`,
+      filters: [{ name: 'ShortForge project', extensions: ['shortforge'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await projects.saveProject(result.filePath, draft, { cacheRoot: path.join(workDirFor(draft.sourcePath), 'clips') });
+    return { filePath: result.filePath };
+  });
+
+  ipcMain.handle('projects:open', async () => {
+    const result = await dialog.showOpenDialog(getWin(), {
+      title: 'Open ShortForge project', properties: ['openFile'],
+      filters: [{ name: 'ShortForge project', extensions: ['shortforge'] }],
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    const project = await projects.openProject(result.filePaths[0], {
+      cacheRootForSource: (source) => path.join(workDirFor(source), 'clips'),
+    });
+    const video = await probe(project.sourcePath);
+    if (!video.width || !video.height || !video.duration) throw new Error('The project recording has no playable video.');
+    const segments = project.segments.filter(({ start, end }) => start < video.duration && end <= video.duration + 0.01)
+      .map((segment) => checkedSegment(segment, video.duration));
+    return { ...project, video, segments };
+  });
+
   // ---- Analyze ---------------------------------------------------------------
   ipcMain.handle('analyze:run', async (_e, { filePath, settings, jobId }) => {
     jobs.create(jobId);
     try {
-      const meta = await probe(filePath, { jobId });
-      if (jobs.isCancelled(jobId)) return { cancelled: true };
-      progress(jobId, STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
-
-      // Scene detection (accurate) or fast keyframe fallback.
-      let sceneTimes;
-      if (settings.scanMode === 'fast') {
-        progress(jobId, STAGES.SCENES, 5, 'Fast keyframe scan...');
-        sceneTimes = await detectKeyframes(filePath, { jobId });
-        progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} keyframes`);
-      } else {
-        sceneTimes = await detectScenes(filePath, {
-          threshold: settings.sceneThreshold,
-          jobId,
-          totalDurationSec: meta.duration,
-          onProgress: (p) => progress(jobId, STAGES.SCENES, p, 'Detecting scenes...'),
-        });
-        progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} scene changes`);
-      }
-      if (jobs.isCancelled(jobId)) return { cancelled: true };
-
-      // Full-coverage segmentation.
-      const segments = buildSegments(sceneTimes, meta.duration, settings);
-      progress(jobId, STAGES.SEGMENT, 100, `${segments.length} shorts planned`);
-
-      // Thumbnails for the UI.
-      const thumbDir = path.join(workDirFor(filePath), 'thumbs');
-      const withThumbs = await extractThumbs(filePath, segments, thumbDir, {
-        jobId,
-        scale: 360,
-        onProgress: (p) => progress(jobId, STAGES.THUMBS, p, 'Building previews...'),
-      });
-
-      return {
-        meta,
-        sceneCount: sceneTimes.length,
-        segments: withThumbs.map((s) => ({ ...s, selected: true })),
-        shortsCount: withThumbs.length,
-      };
+      return await analyzeVideo({ filePath, settings, jobId, onProgress: (...event) => progress(jobId, ...event) });
     } catch (err) {
       if (err && err.isCancelled) return { cancelled: true };
+      throw err;
+    } finally {
+      jobs.done(jobId);
+    }
+  });
+
+  ipcMain.handle('video:thumbnails', async (_e, { filePath, segments, jobId }) => {
+    if (!Array.isArray(segments) || segments.length > 24) throw new Error('Thumbnail requests support up to 24 clips.');
+    jobs.create(jobId);
+    try {
+      const range = segments.map((segment) => checkedSegment(segment, Infinity));
+      const result = await extractThumbs(filePath, range, path.join(workDirFor(filePath), 'thumbs'), { jobId });
+      return { segments: result.map(({ index, thumbPath }) => ({ index, thumbPath })) };
+    } catch (err) {
+      if (err?.isCancelled) return { cancelled: true, segments: [] };
+      throw err;
+    } finally {
+      jobs.done(jobId);
+    }
+  });
+
+  ipcMain.handle('video:previewClip', async (_e, { filePath, segment, settings, jobId }) => {
+    jobs.create(jobId);
+    try {
+      const meta = await probe(filePath, { jobId });
+      const range = checkedSegment(segment, meta.duration);
+      if (range.duration > 600) throw new Error('Preview up to 10 minutes at a time.');
+      const { index, start, end, duration, cropBias } = range;
+      const [result] = await renderVideo({
+        filePath, segments: [{ index, start, end, duration, cropBias }], meta, jobId, preview: true,
+        workDir: path.join(workDirFor(filePath), 'previews'),
+        settings: { ...settings, enhance: false, hwAccel: 'cpu', outputQuality: 'balanced', cutConcurrency: 1 },
+        onProgress: (percent) => progress(jobId, STAGES.CUT, percent, 'Preparing preview…'),
+      });
+      if (result?.status === 'cancelled') return { cancelled: true };
+      if (result?.status !== 'ready') throw new Error(result?.error || 'Preview could not be created.');
+      return { outputPath: result.outputPath };
+    } catch (err) {
+      if (err?.isCancelled) return { cancelled: true };
       throw err;
     } finally {
       jobs.done(jobId);
@@ -226,7 +261,13 @@ function registerIpc(winGetter) {
       const enriched = await pool(segments, 3, async (seg) => {
         if (jobs.isCancelled(jobId)) return seg;
         let dataUri = null;
-        try { if (seg.thumbPath) dataUri = thumbAsDataUri(seg.thumbPath); } catch (_) { /* ignore */ }
+        try {
+          const [thumb] = await extractThumbs(filePath, [checkedSegment(seg, Infinity)],
+            path.join(workDirFor(filePath), 'thumbs'), { jobId });
+          if (thumb?.thumbPath) dataUri = thumbAsDataUri(thumb.thumbPath);
+        } catch (err) {
+          if (err?.isCancelled) return seg;
+        }
         const tText = transcribe.textForRange(transcriptSegs, seg.start, seg.end);
         let ai = {};
         try {
@@ -282,7 +323,8 @@ function registerIpc(winGetter) {
 
       // Attach per-clip caption + title files. Title is what makes an AI render visibly
       // different; we skip generic placeholder titles so non-AI clips aren't tagged.
-      const prepared = segments.map((seg) => {
+      const prepared = segments.map((segment) => {
+        const seg = checkedSegment(segment, meta.duration);
         const extra = {};
         if (settings.burnCaptions && transcriptSegs.length) {
           const srtPath = path.join(sidecarDir, `seg_${seg.index}.srt`);
@@ -297,17 +339,8 @@ function registerIpc(winGetter) {
         return { ...seg, ...extra };
       });
 
-      const results = await cutter.cutAll(filePath, prepared, clipsDir, {
-        jobId,
-        ratioKey: settings.aspectRatio,
-        reframeMode: settings.reframeMode,
-        hwAccel: settings.hwAccel,
-        quality: settings.outputQuality,
-        enhance: !!settings.enhance,
-        hasAudio: meta.hasAudio,
-        srcW: meta.width,
-        srcH: meta.height,
-        concurrency: settings.cutConcurrency || 2,
+      const results = await renderVideo({
+        filePath, segments: prepared, workDir: clipsDir, settings, meta, jobId,
         onProgress: (overall, completed, total) =>
           progress(jobId, STAGES.CUT, overall, `Cutting shorts… ${completed}/${total} done`),
       });
@@ -343,11 +376,7 @@ function registerIpc(winGetter) {
   ipcMain.handle('shell:openPath', async (_e, p) => shell.openPath(p));
   ipcMain.handle('shell:openExternal', async (_e, url) => { shell.openExternal(url); return true; });
   ipcMain.handle('shell:showItem', async (_e, p) => { shell.showItemInFolder(p); return true; });
-  ipcMain.handle('util:fileUrl', async (_e, p) => {
-    const u = new URL('file://');
-    u.pathname = path.resolve(p).replace(/\\/g, '/');
-    return u.href;
-  });
+  ipcMain.handle('util:fileUrl', async (_e, p) => pathToFileURL(p).href);
 }
 
 module.exports = { registerIpc };

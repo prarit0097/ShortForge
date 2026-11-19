@@ -110,8 +110,8 @@ optional; stage 6 is **Process**; stage 7 is **Download**.
 2. SCENES      ffmpeg scene filter → list of scene-change timestamps
                (or fast keyframe-only scan for very large files)
 3. SEGMENT     full-coverage algorithm → consecutive [start,end] clips
-4. THUMBS      one preview frame per clip (for the UI grid)
-   ─────────── "Analyze" finishes here; UI shows "N shorts planned" ───────────
+   ─────────── "Analyze" returns the plan; UI shows the clip count ───────────
+4. THUMBS      visible clip cards request preview frames in the background
 5. AI ENRICH   (optional) Whisper transcript + OpenRouter vision per clip →
                title, caption, hashtags, virality score, smart-crop bias
 6. CUT         ffmpeg per clip: reframe (blur/crop/smart) + AI title + captions,
@@ -276,8 +276,8 @@ dist/ShortForge Setup <version>.exe     ← the installer (~190 MB, share this)
 dist/win-unpacked/ShortForge.exe        ← portable build (runs without installing)
 ```
 
-The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC needs
-**nothing else installed**.
+The installer bundles Electron and FFmpeg/FFprobe. The core editor runs immediately after
+installation. Optional captions require a compiled Whisper executable and a suitable model.
 
 - The app icon comes from `build/icon.ico` (regenerate with `node build/make-icon.js`).
 - The build is **not code-signed** (signing needs a paid certificate), so Windows SmartScreen
@@ -306,6 +306,14 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 7. **Download** — Click **⬇ Batch download selected** and choose a folder. The export reports
    completed, failed, and cancelled copies. Cancellation lets active copies finish and stops
    the remaining queue. The exporter preserves existing filenames by choosing a unique name.
+
+### Edit gameplay highlights
+
+1. Import a finished OBS, capture-card, or console video. Select **Gameplay highlights** and seek to the event in **Source preview**. If the original cannot play in the editor, select **Generate playback preview** to create a short local H.264 proxy around the current position.
+2. Choose **Mark timestamp** to add the event with pre-roll and post-roll. Use **Review clip** to play that range, edit its start and end, and set its horizontal crop. The caption safe-area guide shows where to position text for vertical delivery.
+3. Choose **HUD-safe 9:16** to keep the full game frame inside a vertical canvas. Choose **Original framing** for the source aspect ratio. For recordings with multiple audio tracks, select the game or mic track by name, mix the tracks, or mute the export. A playback proxy uses the selected track or mix.
+4. Use **Render clip** for the current range. Edits flag the clip for rerendering and keep the previous render available for comparison. Batch export uses the currently rendered selections.
+5. **Save project** writes a `.shortforge` file with the source path, selections, trims, crop, titles, and output settings. An unchanged source can reopen with still-available cached renders. The source video and rendered MP4 files stay on disk separately from the project file.
 
 ---
 
@@ -404,6 +412,7 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 | **1.0.4** | **Full-screen shorts by default** — default reframe changed from blurred-pad to **Fill screen** (crop sides), so 9:16 clips fill the whole frame with no blur bars. Reframe options relabelled/reordered; one-time settings migration moves existing installs off the old blur default. |
 | **1.0.5** | **Output quality + 3-round hardening.** Added quality levels (High near-original default / Balanced / Max), forced `yuv420p` for platform compatibility (incl. Intel QSV), Lanczos scaling, and an optional Enhance (denoise+sharpen) filter. Then ran a deep multi-agent review **three times** (25 confirmed bugs found and fixed): real FFmpeg error messages, OpenRouter request+body timeouts, robust JSON parsing, per-thumbnail fault tolerance, a unified `CancelledError` (no more string-matching), `try/finally` on every IPC handler (no job leaks / stuck UI), bounded progress buffers immune to chunk splits, path-hash work dirs (no same-name collisions), honest Whisper availability, VFR fps sanity cap, font/path resilience, and a captions-skipped warning. |
 | **1.0.6** | Clip plans redistribute short remainders and respect the maximum length. Render and export results report per-clip failures and cancellation, successful renders remain available, and selected failed cuts can be retried. Added a Node regression suite and an FFmpeg render smoke test. |
+| **1.1.0** | Gameplay editor with source playback, manual highlights, clip review and trim, HUD-safe 9:16 and original framing, per-clip render, and project save/resume. Added audio track selection, mixing, and mute. Clip plans appear before lazy thumbnail generation. |
 
 ---
 
@@ -423,6 +432,8 @@ The goal is to take a local OBS, capture-card, or console recording from import 
 Run the relevant tests at each phase, update this guide and changelog, then commit and push the verified phase. Confirm the commit on GitHub against the local commit hash.
 
 **Phase 1 verification for 1.0.6.** All 16 tests passed in the staged source snapshot, and `npm run pack` produced the unpacked Windows app. The suite includes a generated OBS-style MKV, audio-only interval rejection, concurrent exports, cancellation, and a simulated destination without hard links. On volumes without hard links, export uses an exclusive copy and the final name can be visible while an active copy finishes.
+
+**Phase 2 verification for 1.1.0.** All 23 tests passed in the staged source snapshot. The Windows Electron smoke test (`.\node_modules\.bin\electron.cmd build/smoke-editor.js`) used the real preload and IPC to import a generated two-track MKV, preview selected audio, mark and trim a highlight, render and rerender in 1080×1920, play the previous render at its original bounds, export, and reopen the project. The media tests cover rotated silent VFR MOV and nonzero-start MPEG-TS. The unpacked Windows build also passed.
 
 **This is a standing rule for this project:**
 

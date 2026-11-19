@@ -46,6 +46,8 @@
           <p class="sub" id="pageSub">Drop a file or browse. Supports 1–10 GB files. Everything stays on your PC.</p>
         </div>
         <div class="topbar-actions">
+          <button class="ghost-btn" id="openProjectBtn" type="button">Open project</button>
+          <button class="ghost-btn hidden" id="saveProjectBtn" type="button">Save project</button>
           <button class="primary-btn" id="addVideoBtn">＋ Add Video</button>
         </div>
       </header>
@@ -69,19 +71,78 @@
           </div>
         </div>
 
+        <section class="panel hidden" id="editorPanel" aria-labelledby="editorTitle">
+          <div class="editor-head">
+            <h2 id="editorTitle" tabindex="-1">Source preview</h2>
+            <button class="ghost-btn hidden" id="editorSource" type="button">Back to source</button>
+          </div>
+          <div class="editor-layout" id="editorLayout">
+            <div class="editor-playback">
+              <div class="editor-stage" id="editorStage">
+                <canvas class="editor-backdrop hidden" id="editorBackdrop" aria-hidden="true"></canvas>
+                <video id="editorVideo" preload="metadata" playsinline aria-label="Video preview"></video>
+                <div class="caption-guide hidden" id="editorCaptionGuide" aria-hidden="true"><span>Caption safe area</span></div>
+              </div>
+              <div class="editor-transport">
+                <button class="ghost-btn" id="editorPlay" type="button" disabled>Play</button>
+                <input id="editorSeek" aria-label="Video position in seconds" type="range" min="0" max="1" step="any" value="0" />
+                <span id="editorTime">0:00.0 / 0:00.0</span>
+              </div>
+              <div class="editor-actions">
+                <button class="ghost-btn hidden" id="editorMark" type="button">Mark timestamp</button>
+                <button class="ghost-btn hidden" id="editorProxy" type="button">Generate playback preview</button>
+              </div>
+              <p class="hint editor-status" id="editorStatus" role="status"></p>
+            </div>
+            <div class="editor-inspector hidden" id="editorInspector">
+              <div class="editor-fields">
+                <label class="field"><span>Start (sec)</span><input id="editorIn" type="number" min="0" step="any" aria-describedby="editorValidation" /></label>
+                <label class="field"><span>End (sec)</span><input id="editorOut" type="number" min="0" step="any" aria-describedby="editorValidation" /></label>
+              </div>
+              <p class="hint editor-validation" id="editorValidation" role="status"></p>
+              <label class="field hidden" id="editorCropField">
+                <span>Horizontal crop <em id="editorCropValue">Center</em></span>
+                <input id="editorCrop" type="range" min="-1" max="1" step="0.01" value="0" />
+              </label>
+              <label class="field checkbox"><input id="editorSafeZone" type="checkbox" /><span>Show caption safe area</span></label>
+              <div class="editor-actions">
+                <button class="primary-btn" id="editorRender" type="button">Render clip</button>
+                <button class="ghost-btn hidden" id="editorPlayRender" type="button">Play render</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 2. Settings / controls -->
         <div class="panel hidden" id="controlsPanel">
           <h3 class="panel-title">Cutting settings</h3>
+          <div class="editor-settings">
+            <label class="field">
+              <span>Mode</span>
+              <select id="clipMode">
+                <option value="coverage">Full coverage</option>
+                <option value="gameplay">Gameplay highlights</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Audio track</span>
+              <select id="audioTrack"></select>
+            </label>
+            <div class="preset-group" aria-label="Output presets" role="group">
+              <button class="ghost-btn" id="presetHudSafe" type="button" aria-pressed="false">HUD-safe 9:16</button>
+              <button class="ghost-btn" id="presetOriginal" type="button" aria-pressed="false">Original 16:9</button>
+            </div>
+          </div>
           <div class="grid">
             <label class="field">
               <span>Target length (sec)</span>
               <input type="number" id="targetLen" min="3" max="600" value="30" />
             </label>
-            <label class="field">
+            <label class="field" data-coverage>
               <span>Min (sec)</span>
               <input type="number" id="minLen" min="2" max="600" value="20" />
             </label>
-            <label class="field">
+            <label class="field" data-coverage>
               <span>Max (sec)</span>
               <input type="number" id="maxLen" min="3" max="600" value="50" />
             </label>
@@ -101,14 +162,14 @@
                 <option value="max">Max — best, slowest</option>
               </select>
             </label>
-            <label class="field">
+            <label class="field" data-coverage>
               <span>Scene scan</span>
               <select id="scanMode">
                 <option value="accurate">Accurate (scene detect)</option>
                 <option value="fast">Fast (keyframes — huge files)</option>
               </select>
             </label>
-            <label class="field">
+            <label class="field" data-coverage>
               <span>Scene sensitivity <em id="threshVal">0.40</em></span>
               <input type="range" id="sceneThreshold" min="0.15" max="0.6" step="0.05" value="0.4" />
             </label>
@@ -238,6 +299,7 @@
     </div>
   </div>
 
+  <script src="./editor.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

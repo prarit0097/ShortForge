@@ -306,3 +306,84 @@ body {
 .toast.err { border-color: var(--danger); }
 .toast.ok { border-color: var(--success); }
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+.topbar-actions, .editor-head, .editor-actions, .preset-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-actions { justify-content: flex-end; }
+.editor-head { justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.editor-head h2 { font-size: 16px; overflow-wrap: anywhere; }
+.editor-layout { display: grid; gap: 22px; }
+.editor-layout.has-clip { grid-template-columns: minmax(0, 2fr) minmax(205px, 1fr); }
+.editor-playback { min-width: 0; }
+.editor-stage {
+  position: relative;
+  width: min(100%, 540px);
+  aspect-ratio: 16 / 9;
+  margin-inline: auto;
+  background: var(--bg);
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+.editor-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; }
+.editor-stage video { position: relative; display: block; width: 100%; height: 100%; object-fit: contain; }
+.editor-stage.is-cropped video { object-fit: cover; }
+.caption-guide {
+  position: absolute;
+  inset: auto 10% 12%;
+  height: 16%;
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--text);
+  border-radius: 4px;
+  background: rgba(13, 16, 20, 0.8);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+}
+.editor-transport {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.editor-transport input { width: 100%; accent-color: var(--accent); }
+.editor-transport span { color: var(--text); white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+.editor-actions { margin-top: 10px; }
+.editor-status, .editor-validation { min-height: 18px; margin-top: 8px; line-height: 1.45; }
+.editor-status.error, .editor-validation.error { color: var(--danger); }
+.editor-inspector { align-self: start; display: grid; gap: 12px; }
+.editor-inspector .editor-validation { margin-top: -7px; }
+.editor-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.editor-settings {
+  display: grid;
+  grid-template-columns: minmax(145px, 1fr) minmax(145px, 1fr) 2fr;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.preset-group button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.ghost-btn:disabled { opacity: 0.55; cursor: default; }
+#editorPanel :focus-visible, #clipGrid button:focus-visible, .topbar-actions button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+.clip-check:focus-visible { outline-offset: -3px; }
+.clip-reason { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+
+@media (max-width: 1050px) {
+  .editor-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preset-group { grid-column: 1 / -1; }
+}
+@media (max-width: 875px) {
+  .editor-layout.has-clip { grid-template-columns: 1fr; }
+  .topbar { gap: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .clip-card, .editor-actions button { transition: none; }
+}

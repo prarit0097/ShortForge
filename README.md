@@ -2,8 +2,9 @@
 
 A lightweight **Windows desktop app** that turns long videos and movies (1 GB–10 GB) into
 short clips **scene-by-scene with full coverage** — nothing gets skipped. Optional **AI layer**
-(OpenRouter) adds scene understanding, virality scoring, auto titles/captions/hashtags and
-smart subject-tracking crop. Everything runs **locally** on your PC — no uploads.
+(OpenRouter) adds scene descriptions, virality scores, titles, captions, hashtags, and a
+per-clip crop hint. Video processing is local. Optional AI enrichment sends a still frame and
+may include a transcript excerpt.
 
 
 ## Maintainer and project overview
@@ -26,6 +27,11 @@ Built by [Prarit Sidana](https://praritsidana.com/). See the [ShortForge project
 - **Per-clip selection** — pick exactly which shorts to keep, rename them inline, preview on hover.
 - **Batch download** — export all selected shorts to a folder you choose, fast (local file copy, concurrent).
 - **Cancel any time** with live progress for every stage.
+- **Gameplay editor** — mark a moment in an OBS, capture-card, or console recording, preview it
+  with sound, adjust the in/out points, and render or rerender one clip. Use HUD-safe 9:16 to
+  retain the whole game frame or keep the original framing for a horizontal export.
+- **Audio and projects** — choose a track, mix tracks, or mute. Save the clip plan and resume
+  editing later with the same recording and available renders.
 
 ## Requirements
 
@@ -70,7 +76,8 @@ Produces an NSIS installer in `dist/`. (Add `build/icon.ico` for a custom icon.)
 
 Captions and transcript-aware titles use a **bundled local Whisper** (`nodejs-whisper`, an optional
 dependency). If it isn't installed/built on your machine, the core app still works fully — only the
-audio-transcript features are skipped. Model is selectable in Settings (`base.en` default).
+audio-transcript features are skipped. Models are selectable in Settings. The default `base`
+supports multiple languages.
 
 ## Project structure
 

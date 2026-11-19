@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('node:crypto');
 const { runFfmpeg } = require('./ffmpeg-util');
 const jobs = require('../jobs');
 
@@ -14,32 +15,32 @@ const jobs = require('../jobs');
  */
 async function extractThumbs(filePath, segments, outDir, { jobId, scale = 360, onProgress } = {}) {
   fs.mkdirSync(outDir, { recursive: true });
+  const source = fs.statSync(filePath);
   const out = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     // Grab a frame a hair after the start to avoid black transition frames.
-    const at = Math.max(0, seg.start + Math.min(0.5, seg.duration / 4));
-    const thumbPath = path.join(outDir, `seg_${String(seg.index).padStart(4, '0')}.jpg`);
+    const at = Math.max(0, Number.isFinite(seg.peak) && seg.peak >= seg.start && seg.peak < seg.end
+      ? seg.peak : seg.start + Math.min(0.5, seg.duration / 4));
+    const name = `${source.size}_${source.mtimeMs}_${Math.round(at * 1000)}_${scale}`;
+    const thumbPath = path.join(outDir, `${name}.jpg`);
+    const temporary = path.join(outDir, `${randomUUID()}.jpg`);
     try {
-      // eslint-disable-next-line no-await-in-loop
-      await runFfmpeg(
-        [
-          '-hide_banner', '-y',
-          '-ss', String(at),
-          '-i', filePath,
-          '-frames:v', '1',
-          '-vf', `scale=${scale}:-1`,
-          '-q:v', '3',
-          thumbPath,
-        ],
-        { jobId }
-      );
-      out.push({ ...seg, thumbPath });
+      if (!fs.existsSync(thumbPath)) {
+        await runFfmpeg([
+          '-hide_banner', '-nostdin', '-y', '-ss', String(at), '-i', filePath,
+          '-map', '0:V:0', '-frames:v', '1', '-vf', `scale=${scale}:-1`, '-q:v', '3', temporary,
+        ], { jobId });
+        if (fs.existsSync(temporary)) fs.renameSync(temporary, thumbPath);
+      }
+      out.push({ ...seg, thumbPath: fs.existsSync(thumbPath) ? thumbPath : null });
     } catch (err) {
       // A single undecodable frame must not abort the whole analysis — keep the
       // segment, just without a preview (the UI + AI handle a null thumbPath).
       if (err && err.isCancelled) throw err;
       out.push({ ...seg, thumbPath: null });
+    } finally {
+      if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     }
     if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
     if (onProgress) onProgress(((i + 1) / segments.length) * 100);

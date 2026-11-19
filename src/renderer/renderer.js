@@ -30,13 +30,23 @@ const state = {
   cancelRequested: false,
   exportAttempt: null,
   enriched: false,
+  mode: 'coverage',
+  sceneCount: null,
+  drafts: new Map(),
 };
 
-let unsubProgress = null;
+const editor = window.shortForgeEditor.createClipEditor({
+  fileUrl,
+  onMark: addMarker,
+  onTrim: (index, range) => editClip(index, range, true),
+  onCrop: (index, cropBias) => editClip(index, { cropBias, cropEdited: true }),
+  onRender: (index) => process(index),
+  onPreview: previewClip,
+});
 
 /* ---------------- helpers ---------------- */
 function fileUrl(p) {
-  return 'file:///' + String(p).replace(/\\/g, '/').replace(/^\/+/, '');
+  return api.toFileUrl(p);
 }
 function fmtDuration(sec) {
   sec = Math.round(sec || 0);
@@ -210,6 +220,7 @@ function gatherSettings() {
     scanMode: $('scanMode').value,
     aspectRatio: $('aspectRatio').value,
     reframeMode: $('reframeMode').value,
+    audioTrack: ['mix', 'none'].includes($('audioTrack').value) ? $('audioTrack').value : Number($('audioTrack').value),
     outputQuality: $('outputQuality').value,
     enhance: $('enhance').checked,
     burnCaptions: $('burnCaptions').checked,
@@ -258,10 +269,13 @@ async function addVideo() {
   selectVideo(f);
 }
 function selectVideo(meta) {
+  resetThumbnails();
   state.video = meta;
   state.segments = [];
   state.exportAttempt = null;
   state.enriched = false;
+  state.sceneCount = null;
+  state.drafts.clear();
 
   $('dropzone').classList.add('hidden');
   $('fileCard').classList.remove('hidden');
@@ -273,22 +287,161 @@ function selectVideo(meta) {
     <span>💾 <b>${fmtSize(meta.sizeBytes)}</b></span>
     <span>🔊 <b>${meta.hasAudio ? meta.audioCodec : 'no audio'}</b></span>`;
   $('controlsPanel').classList.remove('hidden');
-  $('resultsPanel').classList.add('hidden');
+  $('saveProjectBtn').classList.remove('hidden');
   $('pageTitle').textContent = meta.name;
-  $('pageSub').textContent = 'Set your cutting options, then analyze to preview the shorts.';
+  $('pageSub').textContent = 'Preview the recording or choose how to plan your clips.';
+  fillAudioTracks();
+  editor.setSource(meta);
+  updateMode();
   setStep(2, 2);
+}
+
+function fillAudioTracks(selected = 0) {
+  const tracks = state.video?.audioTracks || (state.video?.hasAudio ? [{ index: 0, codec: state.video.audioCodec }] : []);
+  const select = $('audioTrack');
+  select.replaceChildren();
+  for (const [ordinal, track] of tracks.entries()) {
+    const title = track.title || (tracks.length === 1 ? 'Source audio' : `Track ${ordinal + 1}`);
+    const detail = [track.language, track.codec].filter(Boolean).join(' · ');
+    select.add(new Option(detail ? `${title} (${detail})` : title, ordinal));
+  }
+  if (tracks.length > 1) select.add(new Option('Mix all tracks', 'mix'));
+  select.add(new Option(tracks.length ? 'No audio' : 'No audio tracks', 'none'));
+  select.disabled = tracks.length === 0;
+  if ([...select.options].some((option) => option.value === String(selected))) select.value = selected;
+}
+
+function updatePresetButtons() {
+  const settings = gatherSettings();
+  $('presetHudSafe').setAttribute('aria-pressed', String(settings.aspectRatio === '9:16' && settings.reframeMode === 'blur'));
+  $('presetOriginal').setAttribute('aria-pressed', String(settings.aspectRatio === 'original'));
+  editor.configure(settings, state.mode === 'gameplay');
+}
+
+function updateMode() {
+  const gameplay = state.mode === 'gameplay';
+  $('clipMode').value = state.mode;
+  document.querySelectorAll('[data-coverage]').forEach((field) => field.classList.toggle('hidden', gameplay));
+  $('analyzeBtn').textContent = gameplay ? 'Mark a highlight' : 'Analyze video →';
+  $('analyzeHint').textContent = gameplay
+    ? 'Seek to a moment in the recording and select Mark timestamp.'
+    : 'Detect scene boundaries and see the plan before rendering.';
+  $('resultsPanel').classList.toggle('hidden', !gameplay && !state.segments.length);
+  if (gameplay || state.segments.length) renderResults();
+  updatePresetButtons();
+}
+
+function switchMode(mode) {
+  if (mode === state.mode) return;
+  state.drafts.set(state.mode, { segments: state.segments, enriched: state.enriched, sceneCount: state.sceneCount });
+  state.mode = mode;
+  const draft = state.drafts.get(mode);
+  state.segments = draft?.segments || [];
+  state.sceneCount = draft?.sceneCount ?? null;
+  state.enriched = !!draft?.enriched;
+  state.exportAttempt = null;
+  resetThumbnails();
+  editor.showSource();
+  updateMode();
+}
+
+function addMarker(time) {
+  if (state.mode !== 'gameplay' || !state.video) return;
+  const range = window.shortForgeEditor.markerRange(time, state.video.duration, Number($('targetLen').value));
+  if (!range) { toast('Enter a positive target length in Cutting settings.', 'err'); return; }
+  const index = state.segments.reduce((next, clip) => Math.max(next, clip.index + 1), 0);
+  const clip = { ...range, index, peak: time, selected: true, reason: `Marked at ${fmtClock(time)}` };
+  state.segments.push(clip);
+  state.enriched = false;
+  renderResults();
+  setStep(3, 3);
+  editor.review(clip);
+}
+
+function editClip(index, changes, resetThumb = false) {
+  const clip = state.segments.find((item) => item.index === index);
+  Object.assign(clip, changes);
+  if (clip.outputPath) clip.needsRender = true;
+  if (resetThumb) {
+    delete clip.thumbPath;
+    state.enriched = false;
+    renderClips();
+  }
+  refreshClipCard(clip);
+  updateSelCount();
+  return clip;
+}
+
+async function previewClip(segment) {
+  const jobId = newJobId();
+  showProgress('Generating playback preview');
+  try {
+    const settings = { ...gatherSettings(), aspectRatio: 'original', burnTitle: false, burnCaptions: false };
+    return await api.previewClip({ filePath: state.video.path, segment: { index: 0, ...segment }, settings, jobId });
+  } finally {
+    hideProgress();
+  }
+}
+
+async function saveProject() {
+  if (!state.video) return;
+  try {
+    const res = await api.saveProject({
+      sourcePath: state.video.path, mode: state.mode, settings: gatherSettings(),
+      segments: state.segments.map((clip) => clip.needsRender ? { ...clip, outputPath: undefined } : clip),
+    });
+    if (res?.filePath) toast('Project saved', 'ok');
+  } catch (error) {
+    toast(`Could not save project. ${error.message}`, 'err');
+  }
+}
+
+async function openProject() {
+  try {
+    const project = await api.openProject();
+    if (!project) return;
+    state.mode = project.mode;
+    selectVideo(project.video);
+    state.segments = project.segments;
+    const fields = {
+      targetLengthSec: 'targetLen', minLengthSec: 'minLen', maxLengthSec: 'maxLen', sceneThreshold: 'sceneThreshold',
+      scanMode: 'scanMode', aspectRatio: 'aspectRatio', reframeMode: 'reframeMode', outputQuality: 'outputQuality',
+    };
+    for (const [key, id] of Object.entries(fields)) {
+      if (project.settings[key] !== undefined) $(id).value = project.settings[key];
+    }
+    for (const id of ['enhance', 'burnTitle', 'burnCaptions']) {
+      if (project.settings[id] !== undefined) $(id).checked = project.settings[id];
+    }
+    $('threshVal').textContent = Number($('sceneThreshold').value).toFixed(2);
+    fillAudioTracks(project.settings.audioTrack);
+    updateMode();
+    setStep(state.segments.some((clip) => clip.outputPath) ? 5 : 3);
+    toast(project.sourceChanged ? 'Source has changed. Review the clip ranges before rendering.' : 'Project opened', project.sourceChanged ? '' : 'ok');
+  } catch (error) {
+    toast(`Could not open project. ${error.message}`, 'err');
+  }
 }
 
 /* ---------------- analyze ---------------- */
 async function analyze() {
   if (!state.video) return;
+  if (state.mode === 'gameplay') {
+    editor.showSource();
+    $('editorPanel').scrollIntoView({ block: 'start' });
+    $('editorMark').focus({ preventScroll: true });
+    return;
+  }
   await persistSettings();
   const jobId = newJobId();
   showProgress('Analyzing video');
   try {
     const res = await api.analyze({ filePath: state.video.path, settings: gatherSettings(), jobId });
     if (res.cancelled) { toast('Analysis cancelled.'); return; }
+    resetThumbnails();
+    editor.showSource();
     state.segments = res.segments;
+    state.sceneCount = res.sceneCount;
     state.exportAttempt = null;
     state.enriched = false;
     renderResults(res);
@@ -304,15 +457,17 @@ async function analyze() {
 function renderResults(res) {
   $('resultsPanel').classList.remove('hidden');
   const totalDur = state.video.duration;
+  const planLabel = state.mode === 'gameplay'
+    ? 'Gameplay highlights'
+    : `${fmtDuration(totalDur)}${state.sceneCount == null ? '' : ` · ${state.sceneCount} scene changes`} · full coverage plan`;
   $('summary').innerHTML = `
-    <div class="big-num">${state.segments.length} shorts</div>
-    <div class="meta">from ${fmtDuration(totalDur)} • ${res ? res.sceneCount : '—'} scene changes •
-      full coverage, nothing skipped</div>
+    <div class="big-num">${state.segments.length} ${state.segments.length === 1 ? 'clip' : 'clips'}</div>
+    <div class="meta">${planLabel}</div>
     <div class="meta" id="renderStatus" aria-live="polite"></div>
     <div class="meta" id="exportStatus" aria-live="polite"></div>`;
   renderClips();
   updateSelCount();
-  $('resultsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (res) $('resultsPanel').scrollIntoView({ block: 'start' });
 }
 
 function scoreClass(v) {
@@ -340,80 +495,157 @@ function showBatchStatus(id, message, failures = []) {
   status.appendChild(details);
 }
 
+const thumbnailQueue = new Map();
+const thumbnailAttempts = new Set();
+let thumbnailEpoch = 0;
+let thumbnailJob;
+const thumbnailObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    thumbnailObserver.unobserve(entry.target);
+    const clip = state.segments.find((item) => item.index === Number(entry.target.dataset.clip));
+    if (!clip || clip.thumbPath) continue;
+    const key = `${clip.index}:${clip.start}:${clip.end}`;
+    if (thumbnailAttempts.has(key)) continue;
+    thumbnailAttempts.add(key);
+    thumbnailQueue.set(clip.index, { index: clip.index, start: clip.start, end: clip.end, duration: clip.duration, peak: clip.peak });
+  }
+  loadThumbnails();
+}, { root: $('content'), rootMargin: '120px 0px' });
+
+function resetThumbnails() {
+  thumbnailEpoch++;
+  thumbnailObserver.disconnect();
+  thumbnailQueue.clear();
+  thumbnailAttempts.clear();
+  if (thumbnailJob) api.cancel(thumbnailJob).catch(() => {});
+}
+
+async function loadThumbnails() {
+  if (thumbnailJob || !thumbnailQueue.size || !state.video) return;
+  const epoch = thumbnailEpoch;
+  const segments = [...thumbnailQueue.values()].slice(0, 12);
+  for (const { index } of segments) thumbnailQueue.delete(index);
+  const ranges = new Map(segments.map((clip) => [clip.index, clip]));
+  thumbnailJob = `thumb_${crypto.randomUUID()}`;
+  try {
+    const result = await api.getThumbnails({ filePath: state.video.path, segments, jobId: thumbnailJob });
+    if (epoch !== thumbnailEpoch) return;
+    for (const { index, thumbPath } of result?.segments || []) {
+      const clip = state.segments.find((item) => item.index === index);
+      const range = ranges.get(index);
+      if (!thumbPath || !clip || !range || clip.start !== range.start || clip.end !== range.end) continue;
+      clip.thumbPath = thumbPath;
+      const image = $('clipGrid').querySelector(`[data-clip="${index}"] img`);
+      if (image) showThumbnail(image, thumbPath);
+    }
+  } catch {
+    // Clip review and rendering remain available if a thumbnail cannot be read.
+  } finally {
+    thumbnailJob = null;
+    loadThumbnails();
+  }
+}
+
+async function showThumbnail(image, path) {
+  try {
+    image.src = await fileUrl(path);
+    image.classList.remove('hidden');
+  } catch {
+    // A missing thumbnail does not prevent clip review.
+  }
+}
+
 function renderClips() {
   const grid = $('clipGrid');
-  grid.innerHTML = '';
-  state.segments.forEach((seg, i) => {
-    const card = document.createElement('div');
-    card.className = 'clip-card' + (seg.selected ? ' selected' : '');
-    const media = seg.outputPath
-      ? `<video class="clip-vid" src="${fileUrl(seg.outputPath)}" muted preload="metadata"></video>`
-      : seg.thumbPath
-        ? `<img src="${fileUrl(seg.thumbPath)}" loading="lazy" />`
-        : '';
-    const score = seg.viralityScore != null
-      ? `<div class="clip-score ${scoreClass(seg.viralityScore)}">🔥 ${seg.viralityScore}</div>` : '';
-    const tags = (seg.hashtags && seg.hashtags.length)
-      ? `<div class="clip-tags">${seg.hashtags.slice(0, 3).map((t) => `<span>${t}</span>`).join('')}</div>` : '';
-
+  thumbnailObserver.disconnect();
+  const cards = document.createDocumentFragment();
+  for (const seg of state.segments) {
+    const card = document.createElement('article');
+    card.dataset.clip = seg.index;
+    card.className = `clip-card${seg.selected ? ' selected' : ''}`;
     card.innerHTML = `
       <div class="clip-thumb">
-        ${media}
-        <div class="clip-check" data-i="${i}">✓</div>
-        <div class="clip-dur">${seg.duration.toFixed(1)}s</div>
-        ${score}
+        <img alt="" loading="lazy" class="hidden" />
+        <button class="clip-check" type="button">✓</button>
+        <div class="clip-dur"></div><div class="clip-score hidden"></div>
       </div>
       <div class="clip-body">
-        <input class="clip-title" data-i="${i}" value="${(seg.title || `Short ${i + 1}`).replace(/"/g, '&quot;')}" />
-        <div class="clip-range">${fmtClock(seg.start)} → ${fmtClock(seg.end)}</div>
-        ${seg.renderStatus === 'failed' ? '<div class="clip-range">Render failed</div>' : ''}
-        ${seg.renderStatus === 'cancelled' ? '<div class="clip-range">Render cancelled</div>' : ''}
-        ${tags}
-        ${seg.outputPath ? `<div class="clip-actions">
-            <button data-act="play" data-i="${i}">▶ Open</button>
-            <button data-act="reveal" data-i="${i}">📂 Folder</button>
-          </div>` : ''}
+        <input class="clip-title" type="text" />
+        <div class="clip-range"></div><div class="clip-reason hidden"></div>
+        <div class="clip-tags"></div>
+        <div class="clip-actions">
+          <button class="review-clip" type="button">Review clip</button>
+          <button class="reveal-clip hidden" type="button">Show in folder</button>
+        </div>
       </div>`;
-    grid.appendChild(card);
-  });
+    const image = card.querySelector('img');
+    if (seg.thumbPath) showThumbnail(image, seg.thumbPath);
+    else thumbnailObserver.observe(card);
+    const check = card.querySelector('.clip-check');
+    check.setAttribute('aria-label', `Select clip ${seg.index + 1}`);
+    check.setAttribute('aria-pressed', String(Boolean(seg.selected)));
+    check.addEventListener('click', () => {
+      seg.selected = !seg.selected;
+      check.setAttribute('aria-pressed', String(seg.selected));
+      card.classList.toggle('selected', seg.selected);
+      updateSelCount();
+    });
+    card.querySelector('.clip-dur').textContent = `${seg.duration.toFixed(1)}s`;
+    if (seg.viralityScore != null || seg.confidence != null) {
+      const score = card.querySelector('.clip-score');
+      const value = seg.viralityScore ?? seg.confidence;
+      score.textContent = `${value}${seg.viralityScore == null ? '% signal' : ' AI score'}`;
+      score.className = `clip-score ${scoreClass(value)}`;
+    }
+    const title = card.querySelector('.clip-title');
+    title.setAttribute('aria-label', `Title for clip ${seg.index + 1}`);
+    title.value = seg.title || `Clip ${seg.index + 1}`;
+    title.addEventListener('change', () => {
+      editClip(seg.index, { title: title.value });
+      refreshClipCard(seg);
+      editor.refreshClip(seg);
+    });
+    card.querySelector('.clip-range').textContent = `${fmtClock(seg.start)} → ${fmtClock(seg.end)}`;
+    refreshClipCard(seg, card.querySelector('.clip-reason'));
+    for (const tag of (seg.hashtags || []).slice(0, 3)) {
+      const label = document.createElement('span');
+      label.textContent = tag;
+      card.querySelector('.clip-tags').appendChild(label);
+    }
+    card.querySelector('.review-clip').addEventListener('click', () => editor.review(seg));
+    const reveal = card.querySelector('.reveal-clip');
+    reveal.classList.toggle('hidden', !seg.outputPath);
+    reveal.addEventListener('click', () => api.showItem(seg.outputPath));
+    cards.appendChild(card);
+  }
+  grid.replaceChildren(cards);
+}
 
-  grid.querySelectorAll('.clip-check').forEach((el) =>
-    el.addEventListener('click', () => toggleSelect(Number(el.dataset.i))));
-  grid.querySelectorAll('.clip-title').forEach((el) =>
-    el.addEventListener('change', () => { state.segments[Number(el.dataset.i)].title = el.value; }));
-  grid.querySelectorAll('[data-act]').forEach((el) =>
-    el.addEventListener('click', () => {
-      const seg = state.segments[Number(el.dataset.i)];
-      if (el.dataset.act === 'play') api.openPath(seg.outputPath);
-      else api.showItem(seg.outputPath);
-    }));
-  // Hover-to-preview (CSP-safe, no inline handlers).
-  grid.querySelectorAll('.clip-vid').forEach((v) => {
-    v.addEventListener('mouseenter', () => { v.play().catch(() => {}); });
-    v.addEventListener('mouseleave', () => { v.pause(); v.currentTime = 0; });
-  });
+function refreshClipCard(clip, details = $('clipGrid').querySelector(`[data-clip="${clip.index}"] .clip-reason`)) {
+  if (!details) return;
+  const status = clip.needsRender ? 'Rerender needed' : clip.renderStatus === 'failed' ? 'Render failed'
+    : clip.renderStatus === 'cancelled' ? 'Render cancelled' : '';
+  details.textContent = [clip.reason, status].filter(Boolean).join(' · ');
+  details.classList.toggle('hidden', !details.textContent);
 }
 function fmtClock(sec) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
-function toggleSelect(i) {
-  state.segments[i].selected = !state.segments[i].selected;
-  renderClips();
-  updateSelCount();
-}
+function needsRender(clip) { return !clip.outputPath || clip.needsRender; }
 function updateSelCount() {
-  const pending = state.segments.filter((s) => s.selected && !s.outputPath);
+  const pending = state.segments.filter((s) => s.selected && needsRender(s));
   const processBtn = $('processBtn');
   const retrying = pending.length > 0 && pending.every((s) => s.renderStatus);
   processBtn.firstChild.nodeValue = retrying ? '↻ Retry processing (' : '▶ Start processing (';
   $('selCount').textContent = pending.length;
-  processBtn.classList.toggle('hidden', state.segments.every((s) => s.outputPath));
+  processBtn.classList.toggle('hidden', !state.segments.some(needsRender));
   processBtn.disabled = !pending.length;
   const downloadBtn = $('downloadBtn');
-  downloadBtn.classList.toggle('hidden', !state.segments.some((s) => s.outputPath));
-  downloadBtn.disabled = !state.segments.some((s) => s.selected && s.outputPath);
+  downloadBtn.classList.toggle('hidden', !state.segments.some((s) => !needsRender(s)));
+  downloadBtn.disabled = !state.segments.some((s) => s.selected && !needsRender(s));
 }
 
 /* ---------------- AI enrich ---------------- */
@@ -426,7 +658,13 @@ async function enrich() {
   try {
     const res = await api.enrich({ filePath: state.video.path, segments: state.segments, settings: gatherSettings(), jobId });
     if (res.cancelled) { toast('AI enrichment cancelled.'); return; }
-    state.segments = res.segments;
+    const originals = new Map(state.segments.map((clip) => [clip.index, clip]));
+    state.segments = res.segments.map((clip) => {
+      const original = originals.get(clip.index);
+      if (original?.cropEdited) clip.cropBias = original.cropBias;
+      editor.refreshClip(clip);
+      return clip;
+    });
     state.enriched = true;
     renderClips();
     toast('AI analysis done — titles, scores & smart crop ready', 'ok');
@@ -438,8 +676,9 @@ async function enrich() {
 }
 
 /* ---------------- process ---------------- */
-async function process() {
-  let selected = state.segments.filter((s) => s.selected && !s.outputPath);
+async function process(index) {
+  const selectedForRender = (clip) => index === undefined ? clip.selected && needsRender(clip) : clip.index === index;
+  let selected = state.segments.filter(selectedForRender);
   if (!selected.length) { toast('Select at least one short to process.', 'err'); return; }
 
   // If the AI layer is on but clips haven't been enhanced yet, do it now so the AI
@@ -452,12 +691,12 @@ async function process() {
     }
     await enrich();
     if (!state.enriched) return; // enrichment failed/cancelled; abort processing
-    selected = state.segments.filter((s) => s.selected && !s.outputPath);
+    selected = state.segments.filter(selectedForRender);
   }
 
   await persistSettings();
   const jobId = newJobId();
-  showProgress(`Cutting ${selected.length} shorts`);
+  showProgress(selected.length === 1 ? 'Rendering clip' : `Rendering ${selected.length} clips`);
   try {
     const res = await api.process({ filePath: state.video.path, segments: selected, settings: gatherSettings(), jobId });
     const results = res.results || selected.map(({ index }) => ({ index, status: 'cancelled' }));
@@ -466,9 +705,15 @@ async function process() {
       const result = byIndex.get(seg.index);
       if (!result) return seg;
       const renderStatus = result.status;
-      return renderStatus === 'ready'
-        ? { ...seg, renderStatus, outputPath: result.outputPath, fileName: result.fileName }
-        : { ...seg, renderStatus };
+      if (renderStatus === 'ready') {
+        state.exportAttempt?.saved.delete(seg.outputPath);
+        state.exportAttempt?.pending.delete(seg.outputPath);
+        seg = { ...seg, renderStatus, outputPath: result.outputPath, fileName: result.fileName, needsRender: false };
+      } else {
+        seg = { ...seg, renderStatus };
+      }
+      editor.refreshClip(seg);
+      return seg;
     });
     renderClips();
     updateSelCount();
@@ -494,7 +739,7 @@ async function process() {
 
 /* ---------------- export ---------------- */
 async function batchDownload() {
-  let selectedClips = state.segments.filter((s) => s.selected && s.outputPath);
+  let selectedClips = state.segments.filter((s) => s.selected && !needsRender(s));
   if (!selectedClips.length) { toast('Select processed shorts to download.', 'err'); return; }
   const dest = await api.pickFolder();
   if (!dest) return;
@@ -546,12 +791,21 @@ function closeSettings() { $('settingsModal').classList.add('hidden'); }
 /* ---------------- wire up ---------------- */
 function wire() {
   $('addVideoBtn').addEventListener('click', addVideo);
+  $('openProjectBtn').addEventListener('click', openProject);
+  $('saveProjectBtn').addEventListener('click', saveProject);
   $('dropzone').addEventListener('click', addVideo);
   $('changeFile').addEventListener('click', () => {
+    state.video = null;
+    editor.setSource(null);
+    resetThumbnails();
     $('dropzone').classList.remove('hidden');
     $('fileCard').classList.add('hidden');
     $('controlsPanel').classList.add('hidden');
     $('resultsPanel').classList.add('hidden');
+    $('saveProjectBtn').classList.add('hidden');
+    $('pageTitle').textContent = 'Import a video or movie';
+    $('pageSub').textContent = 'Drop a recording or browse to choose a video.';
+    $('addVideoBtn').focus();
     setStep(1, 1);
   });
 
@@ -576,16 +830,47 @@ function wire() {
 
   $('sceneThreshold').addEventListener('input', (e) => { $('threshVal').textContent = Number(e.target.value).toFixed(2); });
   $('targetLen').addEventListener('change', syncBand);
+  $('clipMode').addEventListener('change', (event) => switchMode(event.target.value));
+  function outputChanged() {
+    const drafts = [state.segments, ...[...state.drafts.values()].map((draft) => draft.segments)];
+    for (const clips of drafts) {
+      for (const clip of clips) {
+        if (!clip.outputPath) continue;
+        clip.needsRender = true;
+      }
+    }
+    for (const clip of state.segments) {
+      refreshClipCard(clip);
+      editor.refreshClip(clip);
+    }
+    updatePresetButtons();
+    updateSelCount();
+  }
+  for (const id of ['aspectRatio', 'reframeMode', 'audioTrack', 'outputQuality', 'enhance', 'burnTitle', 'burnCaptions']) {
+    $(id).addEventListener('change', outputChanged);
+  }
+  $('presetHudSafe').addEventListener('click', () => {
+    if ($('aspectRatio').value === '9:16' && $('reframeMode').value === 'blur') return;
+    $('aspectRatio').value = '9:16';
+    $('reframeMode').value = 'blur';
+    outputChanged();
+  });
+  $('presetOriginal').addEventListener('click', () => {
+    if ($('aspectRatio').value === 'original') return;
+    $('aspectRatio').value = 'original';
+    outputChanged();
+  });
 
   $('analyzeBtn').addEventListener('click', analyze);
   $('enrichBtn').addEventListener('click', enrich);
-  $('processBtn').addEventListener('click', process);
+  $('processBtn').addEventListener('click', () => process());
   $('downloadBtn').addEventListener('click', batchDownload);
 
   $('selectAll').addEventListener('click', () => { state.segments.forEach((s) => (s.selected = true)); renderClips(); updateSelCount(); });
   $('selectNone').addEventListener('click', () => { state.segments.forEach((s) => (s.selected = false)); renderClips(); updateSelCount(); });
   $('selectTop').addEventListener('click', () => {
-    const ranked = [...state.segments].filter((s) => s.viralityScore != null).sort((a, b) => b.viralityScore - a.viralityScore);
+    const score = (clip) => clip.viralityScore ?? clip.confidence;
+    const ranked = [...state.segments].filter((s) => score(s) != null).sort((a, b) => score(b) - score(a));
     if (!ranked.length) { toast('Run "Enhance with AI" first to score clips.', 'err'); return; }
     const top = new Set(ranked.slice(0, 10).map((s) => s.index));
     state.segments.forEach((s) => (s.selected = top.has(s.index)));

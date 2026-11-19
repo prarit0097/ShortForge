@@ -53,12 +53,14 @@ function buildFilterComplex(o) {
   const outH = reframe ? r.h : (o.srcH || 1920);
 
   const parts = [];
-  let inLabel = '[0:v]';
+  let inLabel = `[${o.videoMap || '0:V:0'}]`;
   let idx = 0;
   const next = () => `[v${idx++}]`;
 
   if (reframe) {
-    const { w, h } = r;
+    const factor = o.preview ? 720 / Math.max(r.w, r.h) : 1;
+    const w = Math.round(r.w * factor / 2) * 2;
+    const h = Math.round(r.h * factor / 2) * 2;
     const out = next();
     if (o.reframeMode === 'crop' || o.reframeMode === 'smart') {
       const bias = Math.max(-1, Math.min(1, o.cropBias || 0));
@@ -75,6 +77,10 @@ function buildFilterComplex(o) {
         `[bgb][fgs]overlay=(W-w)/2:(H-h)/2${out}`
       );
     }
+    inLabel = out;
+  } else if (o.preview) {
+    const out = next();
+    parts.push(`${inLabel}scale=720:720:force_original_aspect_ratio=decrease:force_divisible_by=2${out}`);
     inLabel = out;
   }
 
@@ -112,13 +118,21 @@ function buildFilterComplex(o) {
 
 /** Cut a single segment to outPath. */
 async function cutClip(filePath, seg, outPath, options) {
-  const { hwAccel, hasAudio } = options;
+  const { hwAccel, hasAudio, audioTrack = 0, inputArgs = [] } = options;
   const { vargs, audioBitrate } = await encoderArgs(hwAccel, options.quality);
   if (options.jobId && jobs.isCancelled(options.jobId)) throw new jobs.CancelledError();
 
-  const args = ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', '-abort_on', 'empty_output'];
+  const args = ['-hide_banner', '-nostdin', '-y', '-progress', 'pipe:1', '-nostats', '-abort_on', 'empty_output'];
   // Fast + accurate: input seeking before -i, re-encode trims precisely from prior keyframe.
-  args.push('-ss', String(seg.start), '-to', String(seg.end), '-i', filePath);
+  args.push('-ss', String(seg.start), '-to', String(seg.end), ...inputArgs, '-i', filePath);
+  const videoMap = Number.isInteger(options.videoStreamIndex) ? `0:${options.videoStreamIndex}` : '0:V:0';
+  const trackCount = options.audioTracks?.length ?? (hasAudio ? 1 : 0);
+  const includeAudio = trackCount > 0 && audioTrack !== 'none';
+  const mixAudio = includeAudio && audioTrack === 'mix' && trackCount > 1;
+  const ordinal = Number.isInteger(audioTrack) ? audioTrack : 0;
+  if (includeAudio && !mixAudio && (ordinal < 0 || ordinal >= trackCount)) {
+    throw new Error('The selected audio track is unavailable.');
+  }
 
   const fc = buildFilterComplex({
     ratioKey: options.ratioKey,
@@ -129,15 +143,19 @@ async function cutClip(filePath, seg, outPath, options) {
     subtitlePath: seg.subtitlePath || options.subtitlePath || null,
     srcW: options.srcW,
     srcH: options.srcH,
+    preview: options.preview,
+    videoMap,
   });
 
-  if (fc) {
-    args.push('-filter_complex', fc.filter, '-map', fc.map);
-    if (hasAudio) args.push('-map', '0:a:0?');
-  }
+  const mixFilter = mixAudio && Array.from({ length: trackCount }, (_, index) => `[0:a:${index}]`).join('') +
+    `amix=inputs=${trackCount}:duration=longest:dropout_transition=0[clipaudio]`;
+  const filters = [fc?.filter, mixFilter].filter(Boolean).join(';');
+  if (filters) args.push('-filter_complex', filters);
+  args.push('-map', fc?.map || videoMap);
+  if (includeAudio) args.push('-map', mixAudio ? '[clipaudio]' : `0:a:${ordinal}`);
 
   args.push(...vargs);
-  if (hasAudio) args.push('-c:a', 'aac', '-b:a', audioBitrate);
+  if (includeAudio) args.push('-c:a', 'aac', '-b:a', audioBitrate);
   else args.push('-an');
   args.push('-movflags', '+faststart', outPath);
 
