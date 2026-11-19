@@ -140,6 +140,11 @@ body {
 .panel-title { font-size: 15px; margin-bottom: 16px; color: var(--text); }
 
 /* Dropzone */
+.video-link-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; align-items: end; margin-bottom: 16px; }
+.video-link-form .checkbox, #videoLinkStatus { grid-column: 1 / -1; }
+#videoLinkStatus:empty { display: none; }
+#videoLinkStatus { margin: 0; overflow-wrap: anywhere; }
+.video-link-form button { min-height: 40px; }
 .dropzone {
   border: 2px dashed var(--border); border-radius: var(--radius);
   padding: 54px 20px; text-align: center; cursor: pointer;
@@ -171,7 +176,7 @@ body {
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field > span { font-size: 12px; color: var(--muted); font-weight: 500; }
 .field > span em { color: var(--accent); font-style: normal; }
-.field input[type="number"], .field input[type="text"], .field input[type="password"], .field select {
+.field input[type="number"], .field input[type="text"], .field input[type="password"], .field input[type="url"], .field select {
   background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
   padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13.5px; width: 100%;
   transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);

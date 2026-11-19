@@ -35,6 +35,8 @@ Built by [Prarit Sidana](https://praritsidana.com/). See the [ShortForge project
 - **Local highlight suggestions** — find gameplay moments from changes in motion and sound,
   then review the ranked clips. **Watch recordings** lists new OBS or replay-buffer files once
   they stop changing and lets you choose which one to import.
+- **Import from a link** — paste a public YouTube video or direct video URL to start the local
+  gameplay scan. Turn on **Auto-render HUD-safe 9:16** before pasting to render the suggestions.
 
 ## Requirements
 

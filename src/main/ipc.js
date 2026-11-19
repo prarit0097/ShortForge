@@ -20,13 +20,14 @@ const hwaccel = require('./services/hwaccel');
 const { probe } = require('./services/probe');
 const { extractThumbs, thumbAsDataUri } = require('./services/thumbnails');
 const { analyzeVideo, renderVideo } = require('./services/pipeline');
+const { downloadRecording, linkedRecordingInputArgs } = require('./services/link-import');
 const { candidateShortlist, enrichmentSamples } = require('./services/highlight-enrichment');
 const projects = require('./services/projects');
 const { watchRecordings } = require('./services/watch-recordings');
 const exporter = require('./services/exporter');
 const openrouter = require('./services/openrouter');
 const transcribe = require('./services/transcribe');
-const { STAGES } = require('./constants');
+const { DEFAULTS, STAGES } = require('./constants');
 
 let getWin = () => null;
 let recordingWatcher;
@@ -70,6 +71,10 @@ function workDirFor(filePath) {
   return path.join(app.getPath('userData'), 'work', `${base}_${hash}`);
 }
 
+function linkInputArgs(filePath) {
+  return linkedRecordingInputArgs(filePath, path.join(app.getPath('userData'), 'downloads'));
+}
+
 function checkedSegment(segment, duration) {
   const { index, start, end } = segment || {};
   if (!Number.isSafeInteger(index) || index < 0 || !Number.isFinite(start) || !Number.isFinite(end) ||
@@ -88,6 +93,7 @@ async function localTranscript(filePath, settings, meta, jobId) {
   const result = await transcribe.transcribe(filePath, {
     model: settings.whisperModel, jobId, audioTrack: settings.audioTrack, trackCount: meta.audioTracks.length,
     modelRootPath: path.join(app.getPath('userData'), 'whisper-models'),
+    inputArgs: linkInputArgs(filePath),
   });
   if (jobs.isCancelled(jobId)) throw new jobs.CancelledError();
   const segments = result.segments || [];
@@ -133,7 +139,7 @@ function registerIpc(winGetter) {
     for (const fp of res.filePaths) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        out.push(await probe(fp));
+        out.push(await probe(fp, { inputArgs: linkInputArgs(fp) }));
       } catch (err) {
         out.push({ path: fp, name: path.basename(fp), error: err.message });
       }
@@ -143,7 +149,7 @@ function registerIpc(winGetter) {
 
   ipcMain.handle('probe:file', async (_e, filePath) => {
     try {
-      return await probe(filePath);
+      return await probe(filePath, { inputArgs: linkInputArgs(filePath) });
     } catch (err) {
       return { path: filePath, name: path.basename(filePath), error: err.message };
     }
@@ -229,7 +235,7 @@ function registerIpc(winGetter) {
     const project = await projects.openProject(result.filePaths[0], {
       cacheRootForSource: (source) => path.join(workDirFor(source), 'clips'),
     });
-    const video = await probe(project.sourcePath);
+    const video = await probe(project.sourcePath, { inputArgs: linkInputArgs(project.sourcePath) });
     if (!video.width || !video.height || !video.duration) throw new Error('The project recording has no playable video.');
     const segments = project.segments.filter(({ start, end }) => start < video.duration && end <= video.duration + 0.01)
       .map((segment) => checkedSegment(segment, video.duration));
@@ -237,10 +243,48 @@ function registerIpc(winGetter) {
   });
 
   // ---- Analyze ---------------------------------------------------------------
+  ipcMain.handle('video:link', async (_e, { url, autoRender, jobId }) => {
+    const job = jobs.create(jobId);
+    const settings = { ...DEFAULTS, ...settingsStore.load(), analysisMode: 'gameplay', audioTrack: 0,
+      aspectRatio: '9:16', reframeMode: 'blur', aiEnabled: false, enhance: false };
+    let downloaded;
+    let planned = false;
+    try {
+      const userData = app.getPath('userData');
+      downloaded = await downloadRecording(url, {
+        root: path.join(userData, 'downloads'), toolsDir: path.join(userData, 'tools'),
+        signal: job.controller.signal, report: (percent, message) => progress(jobId, 'download', percent, message),
+      });
+      const { filePath, inputArgs } = downloaded;
+      const plan = await analyzeVideo({ filePath, inputArgs, settings, jobId,
+        onProgress: (...event) => progress(jobId, ...event) });
+      plan.meta.name = downloaded.label.slice(0, 240);
+      planned = true;
+      if (autoRender !== true || !plan.segments.length) return plan;
+      try {
+        const results = await renderVideo({ filePath, inputArgs, segments: plan.segments,
+          workDir: path.join(workDirFor(filePath), 'clips'), settings, meta: plan.meta, jobId,
+          onProgress: (percent, completed, total) => progress(jobId, STAGES.CUT, percent,
+            `Rendering HUD-safe 9:16 clips… ${completed}/${total} done`),
+        });
+        return { ...plan, results };
+      } catch (error) {
+        return { ...plan, renderError: job.cancelled ? 'Rendering cancelled.' : error.message };
+      }
+    } catch (error) {
+      if (job.cancelled || error.isCancelled) return { cancelled: true };
+      throw error;
+    } finally {
+      if (downloaded && !planned) await fs.promises.rm(downloaded.folder, { recursive: true, force: true }).catch(() => {});
+      jobs.done(jobId);
+    }
+  });
+
   ipcMain.handle('analyze:run', async (_e, { filePath, settings, jobId }) => {
     jobs.create(jobId);
     try {
-      return await analyzeVideo({ filePath, settings, jobId, onProgress: (...event) => progress(jobId, ...event) });
+      return await analyzeVideo({ filePath, settings, jobId, inputArgs: linkInputArgs(filePath),
+        onProgress: (...event) => progress(jobId, ...event) });
     } catch (err) {
       if (err && err.isCancelled) return { cancelled: true };
       throw err;
@@ -254,7 +298,8 @@ function registerIpc(winGetter) {
     jobs.create(jobId);
     try {
       const range = segments.map((segment) => checkedSegment(segment, Infinity));
-      const result = await extractThumbs(filePath, range, path.join(workDirFor(filePath), 'thumbs'), { jobId });
+      const result = await extractThumbs(filePath, range, path.join(workDirFor(filePath), 'thumbs'),
+        { jobId, inputArgs: linkInputArgs(filePath) });
       return { segments: result.map(({ index, thumbPath }) => ({ index, thumbPath })) };
     } catch (err) {
       if (err?.isCancelled) return { cancelled: true, segments: [] };
@@ -267,12 +312,13 @@ function registerIpc(winGetter) {
   ipcMain.handle('video:previewClip', async (_e, { filePath, segment, settings, jobId }) => {
     jobs.create(jobId);
     try {
-      const meta = await probe(filePath, { jobId });
+      const inputArgs = linkInputArgs(filePath);
+      const meta = await probe(filePath, { jobId, inputArgs });
       const range = checkedSegment(segment, meta.duration);
       if (range.duration > 600) throw new Error('Preview up to 10 minutes at a time.');
       const { index, start, end, duration, cropBias } = range;
       const [result] = await renderVideo({
-        filePath, segments: [{ index, start, end, duration, cropBias }], meta, jobId, preview: true,
+        filePath, segments: [{ index, start, end, duration, cropBias }], meta, jobId, inputArgs, preview: true,
         workDir: path.join(workDirFor(filePath), 'previews'),
         settings: { ...settings, enhance: false, hwAccel: 'cpu', outputQuality: 'balanced', cutConcurrency: 1 },
         onProgress: (percent) => progress(jobId, STAGES.CUT, percent, 'Preparing preview…'),
@@ -309,9 +355,10 @@ function registerIpc(winGetter) {
       if (result.response !== 0 || jobs.isCancelled(jobId)) return { cancelled: true };
 
       const models = { vision: settings.aiModelVision, text: settings.aiModelText };
+      const inputArgs = linkInputArgs(filePath);
       let transcriptSegs = [];
       if (shareTranscript && settings.audioTrack !== 'none' && transcribe.isAvailable()) {
-        transcriptSegs = await localTranscript(filePath, settings, await probe(filePath, { jobId }), jobId);
+        transcriptSegs = await localTranscript(filePath, settings, await probe(filePath, { jobId, inputArgs }), jobId);
       }
       if (jobs.isCancelled(jobId)) return { cancelled: true };
 
@@ -322,7 +369,7 @@ function registerIpc(winGetter) {
         try {
           const samples = enrichmentSamples(checkedSegment(seg, Infinity), mode);
           const images = await extractThumbs(filePath, samples,
-            path.join(workDirFor(filePath), 'thumbs'), { jobId });
+            path.join(workDirFor(filePath), 'thumbs'), { jobId, inputArgs });
           frames = images.filter((image) => image.thumbPath).map((image) => thumbAsDataUri(image.thumbPath));
         } catch (err) {
           if (err?.isCancelled) return seg;
@@ -359,7 +406,8 @@ function registerIpc(winGetter) {
     jobs.create(jobId);
     let sidecarDir;
     try {
-      const meta = await probe(filePath, { jobId });
+      const inputArgs = linkInputArgs(filePath);
+      const meta = await probe(filePath, { jobId, inputArgs });
       if (jobs.isCancelled(jobId)) return { cancelled: true };
       const workDir = workDirFor(filePath);
       const clipsDir = path.join(workDir, 'clips');
@@ -393,7 +441,7 @@ function registerIpc(winGetter) {
       });
 
       const results = await renderVideo({
-        filePath, segments: prepared, workDir: clipsDir, settings, meta, jobId,
+        filePath, segments: prepared, workDir: clipsDir, settings, meta, jobId, inputArgs,
         onProgress: (overall, completed, total) =>
           progress(jobId, STAGES.CUT, overall, `Cutting shorts… ${completed}/${total} done`),
       });

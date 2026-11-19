@@ -5,6 +5,7 @@
 const assert = require('node:assert/strict');
 const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -274,7 +275,37 @@ async function smoke() {
   }
   console.log(`Editor smoke passed: OBS import, playback preview, ${firstDuration}s and ${secondDuration}s vertical renders, export, project reopen.`);
   await smokeHighlightsAndWatcher();
+  await smokeLinkImport();
   await smokeEnrichmentConsent();
+}
+
+async function smokeLinkImport() {
+  const sourceBytes = fs.readFileSync(path.join(workspace, 'Two bursts.mkv'));
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'video/x-matroska', 'Content-Length': sourceBytes.length });
+    response.end(sourceBytes);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/Linked gameplay.mkv`.replace(/ /g, '%20');
+  const pasteLink = () => runInPage(`(() => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', ${JSON.stringify(url)});
+    document.querySelector('#videoLink').dispatchEvent(new ClipboardEvent('paste', { clipboardData, cancelable: true }));
+  })()`);
+  try {
+    await pasteLink();
+    await waitFor(`document.querySelector('#fileName').textContent === 'Linked gameplay.mkv'
+      && document.querySelectorAll('#clipGrid [data-clip]').length === 2`, 'Pasted direct link highlights');
+    assert.equal(await runInPage(`document.querySelector('#downloadBtn').classList.contains('hidden')`), true);
+    await click('#linkAutoRender');
+    await pasteLink();
+    await waitFor(`document.querySelector('#renderStatus').textContent.includes('2/2 shorts rendered')`, 'Pasted direct link auto-render');
+    await checkRender(await currentRender(), 10);
+    console.log('Link smoke passed: direct URL paste, local highlight scan, and optional playable HUD-safe 9:16 renders.');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function smokeEnrichmentConsent() {

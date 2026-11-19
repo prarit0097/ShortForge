@@ -241,6 +241,7 @@ videocutapp/
     │       ├── segmenter.js           Full-coverage segmentation algorithm
     │       ├── pipeline.js            Analysis and rendering used by desktop and automation
     │       ├── highlights.js          Local motion, audio, and HUD-region scoring
+    │       ├── link-import.js         YouTube and HTTP(S) video download, verification, and cache paths
     │       ├── highlight-enrichment.js  Gameplay shortlist and still frame sampling
     │       ├── projects.js            Save and reopen versioned local projects
     │       ├── watch-recordings.js    Quiet-period detection for completed recordings
@@ -334,6 +335,14 @@ installation. Optional captions need a compatible Whisper backend and a suitable
 The local score measures activity. For optional semantic labels such as chase, near miss, crash, or stunt, use **Enhance with AI** on selected clips and approve the OpenRouter prompt. Each gameplay pass enriches up to ten candidates. The pass preserves manually edited titles and crops. **Share transcript context** is off by default. Turning it on lets a request include up to 800 characters of available transcript per clip. Local detection was tested with synthetic footage. GTA VI accuracy and dynamic subject tracking still require representative footage for calibration and review.
 
 ---
+
+### Import a YouTube or direct video link
+
+1. In **Video link**, paste a public YouTube watch, Shorts, or `youtu.be` URL, or a direct HTTP(S) video URL. Pasting starts the import and the local gameplay scan. If you type the link, select **Find highlights**.
+2. To render as soon as the scan finishes, check **Auto-render HUD-safe 9:16** before pasting. ShortForge renders the suggested clips with full-width gameplay inside a vertical canvas. Review the results, then use **Batch download selected** to export to your folder.
+3. Review, trim, or add a manual marker in the editor. If the scan finds no strong peaks, you can still mark a clip from the downloaded source. Cancelling a download or scan clears its staging files. After analysis, the downloaded recording stays in the app's `downloads` folder so saved projects can reopen it.
+
+The Windows x64 build includes Deno. The first YouTube import downloads a pinned `yt-dlp` executable from GitHub, verifies its SHA-256 checksum, and caches it under `tools` in the app's user-data folder. YouTube support covers individual public recordings eligible for download. Account sign-in, DRM, playlists, and active live streams are outside this flow. YouTube may return an access error for particular videos. Direct URLs must return an MP4, MOV, MKV, WebM, AVI, FLV, or MPEG-TS file. The final recording limit is 10 GiB. YouTube can temporarily use extra disk space to merge separate video and audio streams. Highlight detection and auto-render run locally and skip OpenRouter enrichment.
 
 ## Local CLI and MCP setup
 
@@ -477,6 +486,7 @@ The server retains 32 finished jobs during its lifetime. It accepts sources up t
 | **1.1.0** | Gameplay editor with source playback, manual highlights, clip review and trim, HUD-safe 9:16 and original framing, per-clip render, and project save/resume. Added audio track selection, mixing, and mute. Clip plans appear before lazy thumbnail generation. |
 | **1.2.0** | Added ranked local gameplay suggestions, monitoring for finished recordings, and limited OpenRouter enrichment with chronological still frames, a per-batch consent prompt, and optional transcript context. |
 | **1.3.0** | Added the local CLI and stdio MCP server, source-bound segment IDs, and job progress, cancellation, and result metadata for automation. Updated the optional Whisper backend and fixed subtitle timing at clip boundaries. |
+| **1.4.0** | Paste a public YouTube or direct video link to download and scan for local gameplay highlights, with optional automatic HUD-safe 9:16 rendering. |
 
 ---
 
@@ -502,6 +512,8 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 **Phase 3 verification for 1.2.0.** All 39 tests passed in the staged snapshot, and the unpacked Windows build succeeded. The Electron smoke test found and ranked two labeled synthetic peaks, preserved a manual marker, prevented duplicates on rescan, and imported a watched recording only after a user action and at least ten seconds of quiet time. Watch events stopped when requested. OpenRouter requests were tested with a mocked service. No real GTA VI recordings were used.
 
 **Phase 4 verification for 1.3.0.** All 47 regression tests passed. The Windows Electron smoke verified the editor, watcher, and AI consent via the real preload and IPC. The mocked OpenRouter service received no request on decline and three still frames on approval. Transcript text stayed out of the request with sharing off. `npm run dist -- --publish never` produced the unsigned NSIS installer. The unpacked `ShortForge.exe` passed a real MCP stdio handshake and rendered a playable 1080×1920 H.264 clip. The packaged Whisper backend also produced a timed transcript from synthetic speech. `npm audit --omit=dev` reported zero findings in the production npm dependency tree. A full audit continues to report findings in Electron and build tooling.
+
+**Link import verification for 1.4.0.** All 50 regression tests passed. The Electron smoke test pasted a direct HTTP video, verified two suggestions, and repeated the import with auto-render enabled. FFprobe and FFmpeg confirmed playable 1080×1920 output. A public YouTube video was downloaded and scanned in both development and a packaged build. The packaged settings produced a playable 1080×1920 H.264 clip. One YouTube request returned HTTP 403 and a normal repeat request succeeded. Cancellation and staging cleanup are covered by tests against a partial HTTP response.
 
 **This is a standing rule for this project:**
 

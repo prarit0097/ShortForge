@@ -286,6 +286,41 @@ async function addVideo() {
   selectVideo(f);
 }
 
+async function importVideoLink() {
+  if (state.jobId) return;
+  const input = $('videoLink');
+  const status = $('videoLinkStatus');
+  if (!input.reportValidity()) return;
+  const autoRender = $('linkAutoRender').checked;
+  const jobId = newJobId();
+  status.textContent = '';
+  showProgress('Importing link and finding highlights');
+  try {
+    const result = await api.importVideoLink({ url: input.value, autoRender, jobId });
+    if (result.cancelled) {
+      status.textContent = 'Link import cancelled.';
+      return;
+    }
+    input.value = '';
+    state.mode = 'gameplay';
+    $('aspectRatio').value = '9:16';
+    $('reframeMode').value = 'blur';
+    selectVideo(result.meta);
+    state.segments = result.segments;
+    state.gameplayMessage = result.segments.length
+      ? 'Review the highlights from the linked recording.'
+      : 'No clear motion or sound peaks. Use Mark manually to add a clip.';
+    renderResults(result);
+    setStep(3, 3);
+    if (result.results) showRenderResults(result, result.segments);
+    if (result.renderError) showBatchStatus('renderStatus', result.renderError);
+  } catch (error) {
+    status.textContent = error.message.replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
+  } finally {
+    hideProgress();
+  }
+}
+
 async function startRecordingWatch() {
   const button = $('watchRecordingsBtn');
   const status = $('watchStatus');
@@ -845,41 +880,45 @@ async function process(index) {
   showProgress(selected.length === 1 ? 'Rendering clip' : `Rendering ${selected.length} clips`);
   try {
     const res = await api.process({ filePath: state.video.path, segments: selected, settings: gatherSettings(), jobId });
-    const results = res.results || selected.map(({ index }) => ({ index, status: 'cancelled' }));
-    const byIndex = new Map(results.map((result) => [result.index, result]));
-    state.segments = state.segments.map((seg) => {
-      const result = byIndex.get(seg.index);
-      if (!result) return seg;
-      const renderStatus = result.status;
-      if (renderStatus === 'ready') {
-        state.exportAttempt?.saved.delete(seg.outputPath);
-        state.exportAttempt?.pending.delete(seg.outputPath);
-        seg = { ...seg, renderStatus, outputPath: result.outputPath, fileName: result.fileName, needsRender: false };
-      } else {
-        seg = { ...seg, renderStatus };
-      }
-      editor.refreshClip(seg);
-      return seg;
-    });
-    renderClips();
-    updateSelCount();
-    if (state.segments.some((seg) => seg.outputPath)) setStep(5, 5);
-    const ready = results.filter((result) => result.status === 'ready').length;
-    const failures = results.filter((result) => result.status === 'failed');
-    const cancelled = results.filter((result) => result.status === 'cancelled').length;
-    const message = `${ready}/${selected.length} shorts rendered` +
-      (failures.length ? ` • ${failures.length} failed` : '') +
-      (cancelled ? ` • ${cancelled} cancelled` : '');
-    showBatchStatus('renderStatus', message, failures);
-    toast(message, failures.length ? 'err' : cancelled ? '' : 'ok');
-    if (res.captionsSkipped) {
-      toast('No local transcript was available. Check that Whisper is installed and the selected audio has speech.', 'err');
-    }
+    showRenderResults(res, selected);
   } catch (err) {
     showBatchStatus('renderStatus', `Processing failed. ${err.message}`);
     toast(`Processing failed: ${err.message}`, 'err');
   } finally {
     hideProgress();
+  }
+}
+
+function showRenderResults(res, selected) {
+  const results = res.results || selected.map(({ index }) => ({ index, status: 'cancelled' }));
+  const byIndex = new Map(results.map((result) => [result.index, result]));
+  state.segments = state.segments.map((seg) => {
+    const result = byIndex.get(seg.index);
+    if (!result) return seg;
+    const renderStatus = result.status;
+    if (renderStatus === 'ready') {
+      state.exportAttempt?.saved.delete(seg.outputPath);
+      state.exportAttempt?.pending.delete(seg.outputPath);
+      seg = { ...seg, renderStatus, outputPath: result.outputPath, fileName: result.fileName, needsRender: false };
+    } else {
+      seg = { ...seg, renderStatus };
+    }
+    editor.refreshClip(seg);
+    return seg;
+  });
+  renderClips();
+  updateSelCount();
+  if (state.segments.some((seg) => seg.outputPath)) setStep(5, 5);
+  const ready = results.filter((result) => result.status === 'ready').length;
+  const failures = results.filter((result) => result.status === 'failed');
+  const cancelled = results.filter((result) => result.status === 'cancelled').length;
+  const message = `${ready}/${selected.length} shorts rendered` +
+    (failures.length ? ` • ${failures.length} failed` : '') +
+    (cancelled ? ` • ${cancelled} cancelled` : '');
+  showBatchStatus('renderStatus', message, failures);
+  toast(message, failures.length ? 'err' : cancelled ? '' : 'ok');
+  if (res.captionsSkipped) {
+    toast('No local transcript was available. Check that Whisper is installed and the selected audio has speech.', 'err');
   }
 }
 
@@ -937,6 +976,17 @@ function closeSettings() { $('settingsModal').classList.add('hidden'); }
 /* ---------------- wire up ---------------- */
 function wire() {
   $('addVideoBtn').addEventListener('click', addVideo);
+  $('videoLinkForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    importVideoLink();
+  });
+  $('videoLink').addEventListener('paste', (event) => {
+    const url = event.clipboardData?.getData('text/plain').trim();
+    if (!url) return;
+    event.preventDefault();
+    $('videoLink').value = url;
+    importVideoLink();
+  });
   $('openProjectBtn').addEventListener('click', openProject);
   $('saveProjectBtn').addEventListener('click', saveProject);
   $('dropzone').addEventListener('click', addVideo);

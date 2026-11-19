@@ -54,13 +54,13 @@ function isAvailable() {
 }
 
 /** Extract 16kHz mono WAV (what whisper.cpp expects). */
-function extractAudio(filePath, wav, { jobId, audioTrack, trackCount }) {
+function extractAudio(filePath, wav, { jobId, audioTrack, trackCount, inputArgs }) {
   const mixed = audioTrack === 'mix' && trackCount > 1;
   const inputs = mixed ? Array.from({ length: trackCount }, (_, index) => `[0:a:${index}]`).join('') : '';
   const mapping = mixed
     ? ['-filter_complex', `${inputs}amix=inputs=${trackCount}:duration=longest[audio]`, '-map', '[audio]']
     : ['-map', `0:a:${Number.isSafeInteger(audioTrack) ? audioTrack : 0}`];
-  return runFfmpeg(['-hide_banner', '-nostdin', '-y', '-i', filePath, ...mapping,
+  return runFfmpeg(['-hide_banner', '-nostdin', '-y', ...inputArgs, '-i', filePath, ...mapping,
     '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { jobId });
 }
 
@@ -69,14 +69,14 @@ function extractAudio(filePath, wav, { jobId, audioTrack, trackCount }) {
  * whisper is unavailable. Errors are swallowed into an empty transcript so the
  * pipeline degrades gracefully.
  */
-async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1, modelRootPath } = {}) {
+async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1, modelRootPath, inputArgs = [] } = {}) {
   if (audioTrack === 'none' || !trackCount) return { available: true, segments: [] };
   const mod = loadWhisper();
   if (!mod?.nodewhisper) return { available: false, segments: [] };
 
   const wav = path.join(os.tmpdir(), `sf_${randomUUID()}.wav`);
   try {
-    await extractAudio(filePath, wav, { jobId, audioTrack, trackCount });
+    await extractAudio(filePath, wav, { jobId, audioTrack, trackCount, inputArgs });
     if (modelRootPath) fs.mkdirSync(modelRootPath, { recursive: true });
     const result = await mod.nodewhisper(wav, {
       modelName: model,

@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Pipeline
   analyze: (payload) => invoke('analyze:run', payload),
+  importVideoLink: (payload) => invoke('video:link', payload),
   getThumbnails: (payload) => invoke('video:thumbnails', payload),
   previewClip: (payload) => invoke('video:previewClip', payload),
   saveProject: (draft) => invoke('projects:save', draft),

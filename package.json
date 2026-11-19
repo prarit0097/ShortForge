@@ -1,7 +1,7 @@
 {
   "name": "shortforge",
   "productName": "ShortForge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Windows video editor for scene coverage and gameplay highlights with local CLI and MCP automation.",
   "main": "src/main/main.js",
   "author": "ShortForge",
@@ -19,6 +19,7 @@
     "zod": "4.6.7"
   },
   "optionalDependencies": {
+    "@deno/win32-x64": "2.9.6",
     "nodejs-whisper": "0.4.0"
   },
   "devDependencies": {
@@ -32,6 +33,7 @@
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
       "**/node_modules/ffprobe-static/**",
+      "**/node_modules/@deno/win32-x64/**",
       "**/node_modules/nodejs-whisper/**"
     ],
     "files": [

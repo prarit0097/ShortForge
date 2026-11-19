@@ -13,7 +13,7 @@ const jobs = require('../jobs');
  * @param scale width in px (small for AI/cost, larger for crisp UI). -1 keeps aspect.
  * @returns segments enriched with { thumbPath }
  */
-async function extractThumbs(filePath, segments, outDir, { jobId, scale = 360, onProgress } = {}) {
+async function extractThumbs(filePath, segments, outDir, { jobId, scale = 360, onProgress, inputArgs = [] } = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const source = fs.statSync(filePath);
   const out = [];
@@ -28,7 +28,7 @@ async function extractThumbs(filePath, segments, outDir, { jobId, scale = 360, o
     try {
       if (!fs.existsSync(thumbPath)) {
         await runFfmpeg([
-          '-hide_banner', '-nostdin', '-y', '-ss', String(at), '-i', filePath,
+          '-hide_banner', '-nostdin', '-y', '-ss', String(at), ...inputArgs, '-i', filePath,
           '-map', '0:V:0', '-frames:v', '1', '-vf', `scale=${scale}:-1`, '-q:v', '3', temporary,
         ], { jobId });
         if (fs.existsSync(temporary)) fs.renameSync(temporary, thumbPath);
