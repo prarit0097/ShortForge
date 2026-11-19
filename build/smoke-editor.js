@@ -10,10 +10,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { app, BrowserWindow, dialog, shell } = require('electron');
-const { ffmpegPath } = require('../src/main/binaries');
-const { registerIpc } = require('../src/main/ipc');
-const { probe } = require('../src/main/services/probe');
-const settings = require('../src/main/settings');
+const appRoot = path.resolve(process.env.SHORTFORGE_SMOKE_APP_ROOT || path.join(__dirname, '..'));
+const { ffmpegPath } = require(path.join(appRoot, 'src/main/binaries'));
+const { registerIpc } = require(path.join(appRoot, 'src/main/ipc'));
+const { probe } = require(path.join(appRoot, 'src/main/services/probe'));
+const settings = require(path.join(appRoot, 'src/main/settings'));
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'shortforge-editor-smoke-'));
 const userData = path.join(workspace, 'userData');
@@ -172,7 +173,7 @@ async function smoke() {
     '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-c:a', 'aac',
     '-metadata:s:a:0', 'title=Game audio', '-metadata:s:a:1', 'title=Mic audio', source,
   ]);
-  settings.save({ hwAccel: 'cpu', aiEnabled: false, _fsMigration: true });
+  settings.save({ hwAccel: process.env.SHORTFORGE_SMOKE_ENCODER || 'cpu', aiEnabled: false, _fsMigration: true });
   dialog.showOpenDialog = async (_window, options) => {
     if (options.properties.includes('openDirectory')) {
       const dir = options.properties.includes('createDirectory') ? exportsDir : watchDir;
@@ -193,7 +194,7 @@ async function smoke() {
     height: Number(process.env.SHORTFORGE_SMOKE_HEIGHT) || 860,
     show: false,
     webPreferences: {
-      preload: path.resolve(__dirname, '../src/main/preload.js'),
+      preload: path.join(appRoot, 'src/main/preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -205,7 +206,7 @@ async function smoke() {
   window.webContents.on('console-message', (_event, level, message) => {
     if (level >= 2) rendererErrors.push(message);
   });
-  await window.loadFile(path.resolve(__dirname, '../src/renderer/index.html'));
+  await window.loadFile(path.join(appRoot, 'src/renderer/index.html'));
   await waitFor('document.querySelector("#aspectRatio").options.length', 'Renderer settings');
   const screenshot = process.env.SHORTFORGE_SMOKE_SCREENSHOT;
   if (screenshot) {
@@ -226,6 +227,12 @@ async function smoke() {
   assert.equal(await runInPage('document.querySelector("#content").scrollWidth <= document.querySelector("#content").clientWidth'), true);
   await waitFor('document.querySelector("#fileName").textContent === "OBS recording.mkv"', 'Recording import');
   assert.match(await runInPage('document.querySelectorAll("#audioTrack option")[1].textContent'), /Mic audio/);
+  await click('#analyzeBtn');
+  await waitFor(`document.activeElement.id === 'resultsTitle' && document.querySelector('#summary').textContent.includes('full coverage plan')`,
+    'Full-coverage scene analysis');
+  assert.equal(await runInPage('document.querySelectorAll("#clipGrid [data-clip]").length'), 1);
+  assert.match(await runInPage('document.querySelector(".clip-range").textContent'), /^00:00 → 00:06$/);
+  console.log('Full-coverage smoke passed: local source planned from the start to the end.');
   await setValue('#clipMode', 'gameplay');
   await setValue('#audioTrack', '1');
   await click('#presetHudSafe');
@@ -307,19 +314,32 @@ async function smoke() {
 
 async function smokeLinkImport() {
   const sourceBytes = fs.readFileSync(path.join(workspace, 'Two bursts.mkv'));
-  const server = http.createServer((_request, response) => {
+  let streaming = false;
+  const server = http.createServer((request, response) => {
+    if (request.url === '/slow.mkv') {
+      response.write(sourceBytes.subarray(0, 16));
+      streaming = true;
+      return;
+    }
     response.writeHead(200, { 'Content-Type': 'video/x-matroska', 'Content-Length': sourceBytes.length });
     response.end(sourceBytes);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${server.address().port}/Linked gameplay.mkv`.replace(/ /g, '%20');
-  const pasteLink = () => runInPage(`(() => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const pasteLink = (file = 'Linked%20gameplay.mkv') => runInPage(`(() => {
     const clipboardData = new DataTransfer();
-    clipboardData.setData('text/plain', ${JSON.stringify(url)});
+    clipboardData.setData('text/plain', ${JSON.stringify(base + '/' + file)});
     document.querySelector('#videoLink').dispatchEvent(new ClipboardEvent('paste', { clipboardData, cancelable: true }));
   })()`);
   try {
     await click('#sourceOptions > summary');
+    await pasteLink('slow.mkv');
+    const timeout = Date.now() + 5000;
+    while (!streaming && Date.now() < timeout) await delay(25);
+    assert.equal(streaming, true, 'The test download never started');
+    await runInPage('document.querySelector("#cancelBtn").click()');
+    await waitFor('document.querySelector("#videoLinkStatus").textContent === "Link import cancelled."', 'Cancel active link download');
+    assert.deepEqual(fs.readdirSync(path.join(userData, 'downloads')), []);
     await pasteLink();
     await waitFor(`document.querySelector('#fileName').textContent === 'Linked gameplay.mkv'
       && document.querySelectorAll('#clipGrid [data-clip]').length === 2`, 'Pasted direct link highlights');
@@ -330,7 +350,7 @@ async function smokeLinkImport() {
     await pasteLink();
     await waitFor(`document.querySelector('#renderStatus').textContent.includes('2/2 shorts rendered')`, 'Pasted direct link auto-render');
     await checkRender(await currentRender(), 10);
-    console.log('Link smoke passed: direct URL paste, local highlight scan, and optional playable HUD-safe 9:16 renders.');
+    console.log('Link smoke passed: cancelled a partial download, pasted a direct URL, scanned highlights, and rendered playable HUD-safe 9:16 clips.');
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

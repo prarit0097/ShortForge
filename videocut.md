@@ -515,6 +515,8 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 
 **Workspace verification for 1.5.0.** All 50 regression tests passed. Windows Electron smoke tests covered the default 1280×860 window and minimum 980×680 window, including video import, highlight review, rerendering, export, and project reopen. They also checked the native settings dialog, focus restoration, advanced settings disclosure, workflow navigation, and selection counts. The import and editor layouts were visually reviewed in Electron. Representative primary button text, muted labels, input placeholders, and focus outlines met the contrast targets.
 
+**Full Windows release retest for 1.5.0.** All 50 regression tests passed again. The expanded Electron smoke test verified full-coverage scene analysis and cancellation of an active link download, including removal of its partial files. The editor workflow passed against the checkout with CPU encoding and the extracted NSIS installer payload at 980×680 with Auto selecting Intel Quick Sync. The extracted executable and app archive matched the unpacked build, and all 34 packaged source files matched the checkout byte for byte. The extracted app passed the MCP stdio render test, downloaded a public YouTube video and rendered a playable 1080×1920 H.264 clip, and used native Whisper to generate captions that were verified in rendered frames. OpenRouter approval and payload handling were tested with a mock. The production npm dependency audit reported zero findings.
+
 **This is a standing rule for this project:**
 
 1. **After every change or modification** to the app, update this `videocut.md` so it always
