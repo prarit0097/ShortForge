@@ -251,6 +251,10 @@ async function smoke() {
   assert.equal(await runInPage('document.querySelector("#editorOut").value'), '2.4');
   assert.equal(await currentRender(), second);
 
+  await click('#aiToggle');
+  await waitFor('document.querySelector("#downloadBtn").disabled', 'AI output setting invalidates the prior render');
+  await click('#aiToggle');
+
   if (process.env.SHORTFORGE_SMOKE_SCREENSHOT) {
     await click('#editorPlayRender');
     await waitFor(`document.querySelector('#editorVideo').videoWidth === 1080
@@ -270,6 +274,47 @@ async function smoke() {
   }
   console.log(`Editor smoke passed: OBS import, playback preview, ${firstDuration}s and ${secondDuration}s vertical renders, export, project reopen.`);
   await smokeHighlightsAndWatcher();
+  await smokeEnrichmentConsent();
+}
+
+async function smokeEnrichmentConsent() {
+  settings.setApiKey('test-only-openrouter-key');
+  const requests = [];
+  const dialogs = [];
+  const fetch = global.fetch;
+  const messageBox = dialog.showMessageBox;
+  let response = 1;
+  try {
+    global.fetch = async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ choices: [{ message: {
+        content: JSON.stringify({ title: 'Fixture highlight', eventType: 'other' }),
+      } }] }) };
+    };
+    dialog.showMessageBox = async (_window, options) => {
+      dialogs.push(options.detail);
+      return { response };
+    };
+    const request = {
+      filePath: source, segments: [{ index: 0, start: 0, end: 3, duration: 3 }],
+      settings: { analysisMode: 'gameplay', aiModelVision: 'fixture', shareTranscriptContext: false },
+    };
+    const enrich = (jobId) => runInPage(`window.api.enrich(${JSON.stringify({ ...request, jobId })})`);
+    assert.equal((await enrich('smoke-consent-declined')).cancelled, true);
+    assert.equal(requests.length, 0);
+    response = 0;
+    assert.equal((await enrich('smoke-consent-approved')).segments[0].title, 'Fixture highlight');
+    assert.match(dialogs[1], /up to three still frames/);
+    assert.equal(requests.length, 1);
+    const content = requests[0].messages[1].content;
+    assert.equal(content.filter((item) => item.type === 'image_url').length, 3);
+    assert.doesNotMatch(content[0].text, /Transcript:/);
+    console.log('Enrichment smoke passed: approval required, three stills sent to the mock, transcript excluded by default.');
+  } finally {
+    global.fetch = fetch;
+    dialog.showMessageBox = messageBox;
+    settings.setApiKey('');
+  }
 }
 
 function cleanAfterExit() {

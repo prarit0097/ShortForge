@@ -87,6 +87,7 @@ async function localTranscript(filePath, settings, meta, jobId) {
   progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing selected audio locally…');
   const result = await transcribe.transcribe(filePath, {
     model: settings.whisperModel, jobId, audioTrack: settings.audioTrack, trackCount: meta.audioTracks.length,
+    modelRootPath: path.join(app.getPath('userData'), 'whisper-models'),
   });
   if (jobs.isCancelled(jobId)) throw new jobs.CancelledError();
   const segments = result.segments || [];
@@ -382,7 +383,7 @@ function registerIpc(winGetter) {
           const srtPath = path.join(sidecarDir, `seg_${seg.index}.srt`);
           extra.subtitlePath = transcribe.writeClipSrt(transcriptSegs, seg.start, seg.end, srtPath);
         }
-        const isRealTitle = seg.title && !/^short\s*\d+$/i.test(seg.title.trim());
+        const isRealTitle = typeof seg.title === 'string' && seg.title.trim() && !/^short\s*\d+$/i.test(seg.title.trim());
         if (burnTitle && isRealTitle) {
           const tf = path.join(sidecarDir, `title_${seg.index}.txt`);
           fs.writeFileSync(tf, wrapText(seg.title, 20), 'utf8');

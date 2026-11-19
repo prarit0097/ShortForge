@@ -768,7 +768,7 @@ function updateSelCount() {
   downloadBtn.classList.toggle('hidden', !state.segments.some((s) => !needsRender(s)));
   downloadBtn.disabled = !state.segments.some((s) => s.selected && !needsRender(s));
   $('enrichBtn').disabled = state.mode === 'gameplay'
-    ? !pending.some(isNotEnriched) : !state.segments.length;
+    ? !state.segments.some((clip) => clip.selected && isNotEnriched(clip)) : !state.segments.length;
 }
 
 /* ---------------- AI enrich ---------------- */
@@ -780,7 +780,7 @@ async function enrich(clips) {
   if (!state.settings.aiEnabled) { toast('Turn the AI Layer ON first.', 'err'); return false; }
   if (!state.settings.hasApiKey) { toast('Add your OpenRouter API key in Settings.', 'err'); openSettings(); return false; }
   const requested = clips ?? (state.mode === 'gameplay'
-    ? state.segments.filter((clip) => clip.selected && needsRender(clip) && isNotEnriched(clip)) : state.segments);
+    ? state.segments.filter((clip) => clip.selected && isNotEnriched(clip)) : state.segments);
   if (!requested.length) return true;
   await persistSettings();
   const jobId = newJobId();
@@ -1024,7 +1024,11 @@ function wire() {
     renderClips(); updateSelCount();
   });
 
-  $('aiToggle').addEventListener('click', async () => { setAi(!state.settings.aiEnabled); await api.setSettings({ aiEnabled: state.settings.aiEnabled }); });
+  $('aiToggle').addEventListener('click', async () => {
+    setAi(!state.settings.aiEnabled);
+    if ($('burnTitle').checked && state.video) outputChanged();
+    await api.setSettings({ aiEnabled: state.settings.aiEnabled });
+  });
   $('openSettings').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', closeSettings);
   $('saveSettings').addEventListener('click', async () => { await persistSettings(); closeSettings(); toast('Settings saved', 'ok'); });

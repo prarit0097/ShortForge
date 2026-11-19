@@ -82,6 +82,20 @@ dependency). If it isn't installed/built on your machine, the core app still wor
 audio-transcript features are skipped. Models are selectable in Settings. The default `base`
 supports multiple languages.
 
+## Local CLI and MCP
+
+The optional automation interface uses two existing, user-controlled folders for input and output. Run `npm install` first, then set the roots in PowerShell.
+
+```powershell
+$env:SHORTFORGE_INPUT_ROOT = 'D:\OBS\Recordings'
+$env:SHORTFORGE_OUTPUT_ROOT = 'D:\Shorts'
+node src/automation/cli.js analyze 'session.mkv' --mode gameplay
+```
+
+To render a clip, copy its ID from the analysis result and give `render` the same source and analysis flags. Add `--aspect-ratio 9:16 --reframe-mode blur` for HUD-safe vertical video.
+
+The local stdio MCP server exposes `analyze_video`, `get_job`, `render_clips`, and `cancel_job`. See the [automation setup](videocut.md#local-cli-and-mcp-setup) for Codex registration and examples.
+
 ## Project structure
 
 ```

@@ -11,6 +11,7 @@ const path = require('path');
 const os = require('os');
 const { randomUUID } = require('node:crypto');
 const { runFfmpeg } = require('./ffmpeg-util');
+const jobs = require('../jobs');
 
 let whisperMod = null;
 function loadWhisper() {
@@ -26,8 +27,8 @@ function loadWhisper() {
   return whisperMod;
 }
 
-/** The npm module can load while the compiled whisper.cpp binary is absent — check both. */
-function whisperBinaryExists() {
+/** The JavaScript wrapper can load before a CLI or native backend is installed. */
+function whisperBackendExists() {
   try {
     const pkgDir = path.dirname(require.resolve('nodejs-whisper/package.json'));
     const rel = [
@@ -38,6 +39,10 @@ function whisperBinaryExists() {
       'cpp/whisper.cpp/main.exe',
       'cpp/whisper.cpp/main',
     ];
+    for (const variant of ['default', 'cuda']) {
+      rel.push(`build/${variant}/Release/nodejs_whisper.node`,
+        `prebuilds/${process.platform}-${process.arch}/${variant}/nodejs_whisper.node`);
+    }
     return rel.some((r) => fs.existsSync(path.join(pkgDir, r)));
   } catch (_) {
     return false;
@@ -45,7 +50,7 @@ function whisperBinaryExists() {
 }
 
 function isAvailable() {
-  return !!loadWhisper() && whisperBinaryExists();
+  return !!loadWhisper()?.nodewhisper && whisperBackendExists();
 }
 
 /** Extract 16kHz mono WAV (what whisper.cpp expects). */
@@ -64,23 +69,28 @@ function extractAudio(filePath, wav, { jobId, audioTrack, trackCount }) {
  * whisper is unavailable. Errors are swallowed into an empty transcript so the
  * pipeline degrades gracefully.
  */
-async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1 } = {}) {
+async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1, modelRootPath } = {}) {
   if (audioTrack === 'none' || !trackCount) return { available: true, segments: [] };
   const mod = loadWhisper();
-  if (!mod) return { available: false, segments: [] };
+  if (!mod?.nodewhisper) return { available: false, segments: [] };
 
   const wav = path.join(os.tmpdir(), `sf_${randomUUID()}.wav`);
   try {
     await extractAudio(filePath, wav, { jobId, audioTrack, trackCount });
-    const nodewhisper = mod.nodewhisper || mod.default || mod;
-    const raw = await nodewhisper(wav, {
+    if (modelRootPath) fs.mkdirSync(modelRootPath, { recursive: true });
+    const result = await mod.nodewhisper(wav, {
       modelName: model,
       autoDownloadModelName: model,
-      whisperOptions: { outputInText: false, outputInSrt: true, wordTimestamps: false },
+      modelRootPath,
+      whisperOptions: { outputInSrt: false, outputInText: false },
     });
-    const segments = parseWhisperOutput(raw, wav);
+    if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
+    const segments = [...result.matchAll(/^\s*\[([^\]\r\n]+) --> ([^\]\r\n]+)\][ \t]*(.+)$/gm)]
+      .map(([, start, end, text]) => ({ start: toSeconds(start), end: toSeconds(end), text: text.trim() }))
+      .filter(({ start, end, text }) => Number.isFinite(start) && end > start && text);
     return { available: true, segments };
   } catch (err) {
+    if (jobId && jobs.isCancelled(jobId)) throw new jobs.CancelledError();
     console.warn('[transcribe] failed:', err.message);
     return { available: true, segments: [], error: err.message };
   } finally {
@@ -90,34 +100,9 @@ async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, tra
   }
 }
 
-function toSeconds(ts) {
-  // "00:00:12,340" -> 12.34
-  const m = ts.match(/(\d+):(\d+):(\d+)[,.](\d+)/);
-  if (!m) return 0;
-  return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000;
-}
-
-/** Parse an SRT string (or sidecar .srt) into segments. */
-function parseWhisperOutput(raw, wavPath) {
-  let srt = typeof raw === 'string' ? raw : '';
-  const sidecar = `${wavPath}.srt`;
-  if ((!srt || !srt.includes('-->')) && fs.existsSync(sidecar)) {
-    srt = fs.readFileSync(sidecar, 'utf8');
-    try { fs.unlinkSync(sidecar); } catch (_) { /* ignore */ }
-  }
-  if (!srt.includes('-->')) return [];
-
-  const segs = [];
-  const blocks = srt.split(/\r?\n\r?\n/);
-  for (const block of blocks) {
-    const lines = block.split(/\r?\n/).filter(Boolean);
-    const tline = lines.find((l) => l.includes('-->'));
-    if (!tline) continue;
-    const [a, b] = tline.split('-->').map((s) => s.trim());
-    const text = lines.slice(lines.indexOf(tline) + 1).join(' ').trim();
-    if (text) segs.push({ start: toSeconds(a), end: toSeconds(b), text });
-  }
-  return segs;
+function toSeconds(timestamp) {
+  const [hours, minutes, seconds] = timestamp.replace(',', '.').split(':').map(Number);
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 /** Pick transcript text overlapping a [start,end] window. */
@@ -144,7 +129,7 @@ function writeClipSrt(segments, start, end, outPath) {
   const body = inRange
     .map((s, i) => {
       const a = Math.max(0, s.start - start);
-      const b = Math.max(a + 0.1, s.end - start);
+      const b = Math.min(end - start, Math.max(a + 0.001, s.end - start));
       return `${i + 1}\n${fmt(a)} --> ${fmt(b)}\n${s.text}\n`;
     })
     .join('\n');

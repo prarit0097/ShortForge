@@ -68,7 +68,7 @@ function projectClips(items) {
     if (Number.isFinite(clip.peak) && clip.peak >= 0) result.peak = clip.peak;
     if (Number.isFinite(clip.viralityScore)) result.viralityScore = clip.viralityScore;
     if (Number.isFinite(clip.confidence)) result.confidence = clip.confidence;
-    for (const key of ['manual', 'titleEdited', 'cropEdited', 'aiKeep']) {
+    for (const key of ['manual', 'titleEdited', 'cropEdited', 'aiKeep', 'aiEnriched']) {
       if (typeof clip[key] === 'boolean') result[key] = clip[key];
     }
     if (Array.isArray(clip.hashtags)) {

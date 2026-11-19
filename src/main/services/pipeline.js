@@ -8,8 +8,8 @@ const { buildSegments } = require('./segmenter');
 const { detectHighlights } = require('./highlights');
 const { cutAll } = require('./cutter');
 
-async function analyzeVideo({ filePath, settings, jobId, inputArgs = [], onProgress = () => {} }) {
-  const meta = await probe(filePath, { jobId, inputArgs });
+async function analyzeVideo({ filePath, settings, jobId, inputArgs = [], metadata, onProgress = () => {} }) {
+  const meta = metadata || await probe(filePath, { jobId, inputArgs });
   if (!meta.width || !meta.height || !(meta.duration > 0)) throw new Error('No playable video was found.');
   onProgress(STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
   if (settings.analysisMode === 'gameplay') {

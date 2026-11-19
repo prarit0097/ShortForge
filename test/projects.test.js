@@ -23,6 +23,7 @@ test('round-trips trims and verified cached renders while excluding secrets', as
     sourcePath, mode: 'gameplay',
     settings: { aspectRatio: '9:16', reframeMode: 'blur', audioTrack: 'mix', apiKey: 'secret' },
     segments: [{ index: 0, start: 3, end: 12, peak: 7.214, title: 'Road trip', cropBias: -0.5,
+      aiEnriched: false, aiDescription: 'Appeared in the old range', viralityScore: 91,
       selected: true, outputPath, transcript: 'private speech' }],
   };
   await saveProject(projectPath, draft, { cacheRoot });
@@ -35,6 +36,7 @@ test('round-trips trims and verified cached renders while excluding secrets', as
   assert.equal(saved.segments[0].duration, 9);
   assert.equal(saved.segments[0].cropBias, -0.5);
   assert.equal(saved.segments[0].peak, 7.214);
+  assert.equal(saved.segments[0].aiEnriched, false);
   assert.equal(saved.segments[0].outputPath, outputPath);
 
   await fs.appendFile(sourcePath, ' changed');

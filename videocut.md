@@ -59,7 +59,7 @@ normally:
 
 ShortForge was built to solve exactly this:
 
-- **Local & private** — handles huge 1–10 GB files directly from disk, nothing uploaded.
+- **Local processing** — handles 1–10 GB source files directly from disk. Optional OpenRouter enrichment asks before sending still frames or enabled transcript excerpts.
 - **Full coverage** — the *whole* video becomes shorts; nothing is skipped.
 - **Free core** — the cutting engine (FFmpeg) is free; AI is optional and pay-per-use only
   if you turn it on.
@@ -213,9 +213,18 @@ videocutapp/
 ├── .gitignore              Ignores node_modules/, dist/, logs, whisper models, work dirs
 ├── build/
 │   ├── make-icon.js        Generates icon.ico (gradient + play mark) with no image deps
+│   ├── smoke-editor.js     Windows Electron workflow smoke with generated media
 │   ├── icon.ico            App/installer icon (256×256)
 │   └── icon.png            PNG copy of the icon
+├── test/                   Node regression tests and FFmpeg media fixtures generated at runtime
 └── src/
+    ├── automation/                   ── Local CLI and MCP ──
+    │   ├── cli.js                      Command-line analyze and render entry point
+    │   ├── mcp-server.js               Four stdio MCP tools
+    │   ├── automation.js               Shared automation operations and source-bound clip IDs
+    │   ├── job-queue.js                Bounded work queue and job result retention
+    │   ├── local-media.js              Approved-folder and media format validation
+    │   └── schemas.js / errors.js     Tool parameter checks and public errors
     ├── main/                          ── Electron MAIN process (Node, full access) ──
     │   ├── main.js                    App entry: creates the window, lifecycle, debug logging
     │   ├── preload.js                 Secure contextBridge: exposes a whitelisted `window.api`
@@ -230,14 +239,20 @@ videocutapp/
     │       ├── probe.js               Reads video metadata via ffprobe
     │       ├── scenes.js              Scene-change detection + fast keyframe fallback
     │       ├── segmenter.js           Full-coverage segmentation algorithm
+    │       ├── pipeline.js            Analysis and rendering used by desktop and automation
+    │       ├── highlights.js          Local motion, audio, and HUD-region scoring
+    │       ├── highlight-enrichment.js  Gameplay shortlist and still frame sampling
+    │       ├── projects.js            Save and reopen versioned local projects
+    │       ├── watch-recordings.js    Quiet-period detection for completed recordings
     │       ├── thumbnails.js          Extracts one preview frame per clip (+ base64 for AI vision)
     │       ├── cutter.js              Builds the filter_complex (reframe + title + captions) and cuts all clips (parallel)
     │       ├── openrouter.js          AI layer: connection test, model list w/ pricing, per-clip enrichment
     │       ├── transcribe.js          Optional Whisper transcription → timestamped segments + SRT
     │       └── exporter.js            Batch copy of selected clips to the chosen folder
-    └── renderer/                      ── UI (sandboxed web page, talks only via window.api) ──
+    └── renderer/                      ── UI (isolated web page, calls window.api) ──
         ├── index.html                 App structure (sidebar, import, settings, clip grid, modals)
         ├── styles.css                 Design system (dark "studio" theme, tokens, states)
+        ├── editor.js                  Playback, markers, trim, and crop controls
         └── renderer.js                All UI logic: import, settings, analyze, AI enhance, process, export
 ```
 
@@ -277,7 +292,7 @@ dist/win-unpacked/ShortForge.exe        ← portable build (runs without install
 ```
 
 The installer bundles Electron and FFmpeg/FFprobe. The core editor runs immediately after
-installation. Optional captions require a compiled Whisper executable and a suitable model.
+installation. Optional captions need a compatible Whisper backend and a suitable model.
 
 - The app icon comes from `build/icon.ico` (regenerate with `node build/make-icon.js`).
 - The build is **not code-signed** (signing needs a paid certificate), so Windows SmartScreen
@@ -317,6 +332,50 @@ installation. Optional captions require a compiled Whisper executable and a suit
 6. **Save project** writes a `.shortforge` file with the source path, selections, trims, crop, titles, and output settings. An unchanged source can reopen with still-available cached renders. The source video and rendered MP4 files stay on disk separately from the project file.
 
 The local score measures activity. For optional semantic labels such as chase, near miss, crash, or stunt, use **Enhance with AI** on selected clips and approve the OpenRouter prompt. Each gameplay pass enriches up to ten candidates. The pass preserves manually edited titles and crops. **Share transcript context** is off by default. Turning it on lets a request include up to 800 characters of available transcript per clip. Local detection was tested with synthetic footage. GTA VI accuracy and dynamic subject tracking still require representative footage for calibration and review.
+
+---
+
+## Local CLI and MCP setup
+
+Automation runs locally from Node.js 18+ with the checkout's npm dependencies installed. It uses the same analysis and render pipeline as the desktop app. It uses CPU encoding and never calls OpenRouter or Whisper. Configure existing local input and output folders that you control. Keep them free of concurrent untrusted writers while automation is running.
+
+```powershell
+npm install
+$env:SHORTFORGE_INPUT_ROOT = 'D:\OBS\Recordings'
+$env:SHORTFORGE_OUTPUT_ROOT = 'D:\Shorts'
+node src/automation/cli.js analyze 'session.mkv' --mode gameplay
+$clipId = '<copy a segment ID from the result>'
+node src/automation/cli.js render 'session.mkv' --mode gameplay --segments $clipId --aspect-ratio 9:16 --reframe-mode blur
+```
+
+Use the same source and analysis flags for both commands. A segment ID is tied to the source revision, settings, and exact range. The CLI rejects old IDs after the source or settings change. `--mode coverage` plans the full recording and accepts scene scan, threshold, and length options. `--mode gameplay` ranks local highlights. Use the returned relative artifact path under the output folder to find each MP4.
+
+### Register ShortForge in Codex
+
+From the checkout, run the following in PowerShell with your actual folder paths. The MCP server uses stdio. It has no listening port.
+
+```powershell
+$entry = (Resolve-Path '.\src\automation\mcp-server.js').Path
+codex mcp add --env 'SHORTFORGE_INPUT_ROOT=D:\OBS\Recordings' --env 'SHORTFORGE_OUTPUT_ROOT=D:\Shorts' shortforge -- node $entry
+codex mcp get shortforge
+```
+
+An installed or unpacked Windows build can use its bundled Node runtime. Set `$exe` to the actual `ShortForge.exe` path and use the script inside its sibling `resources` directory.
+
+```powershell
+$exe = 'C:\Path\To\ShortForge\ShortForge.exe'
+$entry = Join-Path (Split-Path $exe) 'resources\app.asar\src\automation\mcp-server.js'
+codex mcp add --env 'ELECTRON_RUN_AS_NODE=1' --env 'SHORTFORGE_INPUT_ROOT=D:\OBS\Recordings' --env 'SHORTFORGE_OUTPUT_ROOT=D:\Shorts' shortforge -- $exe $entry
+```
+
+| Tool | Inputs and result |
+|---|---|
+| `analyze_video` | Submit a source path relative to the input folder. Select `coverage` or `gameplay`. Returns a job ID. |
+| `get_job` | Poll the job by ID. Returns state, progress, and analysis or render metadata when finished. |
+| `render_clips` | Submit an `analysisId`, one to twenty `segmentIds`, and optional aspect ratio, reframe mode, and quality. Set `aspectRatio` to `9:16` and `reframeMode` to `blur` to preserve the game frame. |
+| `cancel_job` | Cancel by job ID. Pending work stops, and the running stage settles before the slot is reused. |
+
+The server retains 32 finished jobs during its lifetime. It accepts sources up to eight hours or 64 GiB, with at most 1,000 planned clips. Results contain timestamps, IDs, and relative output paths. Frames, transcripts, API keys, and absolute paths stay out of tool results. The MCP client can pass returned metadata to its model.
 
 ---
 
@@ -366,11 +425,11 @@ The local score measures activity. For optional semantic labels such as chase, n
 
 ## 13. Known limitations
 
-- **Captions need a compiled Whisper binary.** `nodejs-whisper` ships the npm wrapper but
-  whisper.cpp must be built (it isn't by default), so caption burn-in is honestly disabled
-  until that binary exists — the UI shows Whisper as "not installed" and clips are cut
-  without captions (the AI hook title needs no Whisper and still works). When present, caption
-  quality depends on the model + language (use a multilingual model, not `*.en`, for non-English).
+- **Captions need a compatible Whisper backend and model.** The Windows x64 package can use
+  the native backend from `nodejs-whisper` 0.4.0. Where a backend is unavailable, the UI shows
+  that captions cannot be generated and clips can still render. The selected model may download
+  on first use and is saved under the app's user-data folder. Choose a multilingual model for
+  non-English audio.
 - "AI smart crop" only changes the frame in **crop** mode; in **blur** mode the whole frame is
   always shown, so crop bias has no visible effect there.
 - Hardware encoders may be *listed* by FFmpeg but fail at runtime (no GPU/driver); the app
@@ -417,6 +476,7 @@ The local score measures activity. For optional semantic labels such as chase, n
 | **1.0.6** | Clip plans redistribute short remainders and respect the maximum length. Render and export results report per-clip failures and cancellation, successful renders remain available, and selected failed cuts can be retried. Added a Node regression suite and an FFmpeg render smoke test. |
 | **1.1.0** | Gameplay editor with source playback, manual highlights, clip review and trim, HUD-safe 9:16 and original framing, per-clip render, and project save/resume. Added audio track selection, mixing, and mute. Clip plans appear before lazy thumbnail generation. |
 | **1.2.0** | Added ranked local gameplay suggestions, monitoring for finished recordings, and limited OpenRouter enrichment with chronological still frames, a per-batch consent prompt, and optional transcript context. |
+| **1.3.0** | Added the local CLI and stdio MCP server, source-bound segment IDs, and job progress, cancellation, and result metadata for automation. Updated the optional Whisper backend and fixed subtitle timing at clip boundaries. |
 
 ---
 
@@ -440,6 +500,8 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 **Phase 2 verification for 1.1.0.** All 23 tests passed in the staged source snapshot. The Windows Electron smoke test (`.\node_modules\.bin\electron.cmd build/smoke-editor.js`) used the real preload and IPC to import a generated two-track MKV, preview selected audio, mark and trim a highlight, render and rerender in 1080×1920, play the previous render at its original bounds, export, and reopen the project. The media tests cover rotated silent VFR MOV and nonzero-start MPEG-TS. The unpacked Windows build also passed.
 
 **Phase 3 verification for 1.2.0.** All 39 tests passed in the staged snapshot, and the unpacked Windows build succeeded. The Electron smoke test found and ranked two labeled synthetic peaks, preserved a manual marker, prevented duplicates on rescan, and imported a watched recording only after a user action and at least ten seconds of quiet time. Watch events stopped when requested. OpenRouter requests were tested with a mocked service. No real GTA VI recordings were used.
+
+**Phase 4 verification for 1.3.0.** All 47 regression tests passed. The Windows Electron smoke verified the editor, watcher, and AI consent via the real preload and IPC. The mocked OpenRouter service received no request on decline and three still frames on approval. Transcript text stayed out of the request with sharing off. `npm run dist -- --publish never` produced the unsigned NSIS installer. The unpacked `ShortForge.exe` passed a real MCP stdio handshake and rendered a playable 1080×1920 H.264 clip. The packaged Whisper backend also produced a timed transcript from synthetic speech. `npm audit --omit=dev` reported zero findings in the production npm dependency tree. A full audit continues to report findings in Electron and build tooling.
 
 **This is a standing rule for this project:**
 

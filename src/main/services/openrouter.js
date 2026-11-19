@@ -157,12 +157,15 @@ async function enrichSegment(key, models, seg, images, transcriptText, { gamepla
     { maxTokens: 500, temperature: 0.6, signal }
   );
 
-  const json = extractJson(content) || {};
+  const json = typeof content === 'string' ? extractJson(content) : null;
+  if (typeof json?.title !== 'string' || !json.title.trim()) {
+    throw new Error('OpenRouter returned invalid clip metadata.');
+  }
   return {
-    aiDescription: json.description || '',
-    title: json.title || `Short ${seg.index + 1}`,
-    caption: json.caption || '',
-    hashtags: Array.isArray(json.hashtags) ? json.hashtags : [],
+    aiDescription: typeof json.description === 'string' ? json.description.trim().slice(0, 500) : '',
+    title: json.title.trim().slice(0, 80),
+    caption: typeof json.caption === 'string' ? json.caption.trim().slice(0, 2000) : '',
+    hashtags: Array.isArray(json.hashtags) ? json.hashtags.filter((tag) => typeof tag === 'string').slice(0, 12) : [],
     viralityScore: Number.isFinite(json.viralityScore) ? Math.max(0, Math.min(100, Math.round(json.viralityScore))) : null,
     cropBias: Number.isFinite(json.subjectX) ? Math.max(-1, Math.min(1, json.subjectX)) : 0,
     aiKeep: json.keep !== false,

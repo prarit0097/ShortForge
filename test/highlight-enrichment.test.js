@@ -35,3 +35,13 @@ test('sends temporal samples and returns a bounded gameplay label and score', as
   assert.equal(result.viralityScore, 100);
   assert.equal(result.cropBias, -1);
 });
+
+test('rejects an invalid model result before it can be treated as enriched', async (t) => {
+  const fetch = global.fetch;
+  t.after(() => { global.fetch = fetch; });
+  global.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: {
+    content: JSON.stringify({ title: ['not a title'], description: 'wrong type' }),
+  } }] }) });
+  await assert.rejects(enrichSegment('fake-test-key', { vision: 'fixture' }, { index: 0, duration: 9 }, [], ''),
+    /invalid clip metadata/i);
+});
