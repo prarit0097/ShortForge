@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { randomUUID } = require('node:crypto');
 const { runFfmpeg } = require('./ffmpeg-util');
 
 let whisperMod = null;
@@ -48,13 +49,14 @@ function isAvailable() {
 }
 
 /** Extract 16kHz mono WAV (what whisper.cpp expects). */
-async function extractAudio(filePath, jobId) {
-  const wav = path.join(os.tmpdir(), `sf_${Date.now()}.wav`);
-  await runFfmpeg(
-    ['-hide_banner', '-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav],
-    { jobId }
-  );
-  return wav;
+function extractAudio(filePath, wav, { jobId, audioTrack, trackCount }) {
+  const mixed = audioTrack === 'mix' && trackCount > 1;
+  const inputs = mixed ? Array.from({ length: trackCount }, (_, index) => `[0:a:${index}]`).join('') : '';
+  const mapping = mixed
+    ? ['-filter_complex', `${inputs}amix=inputs=${trackCount}:duration=longest[audio]`, '-map', '[audio]']
+    : ['-map', `0:a:${Number.isSafeInteger(audioTrack) ? audioTrack : 0}`];
+  return runFfmpeg(['-hide_banner', '-nostdin', '-y', '-i', filePath, ...mapping,
+    '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { jobId });
 }
 
 /**
@@ -62,13 +64,14 @@ async function extractAudio(filePath, jobId) {
  * whisper is unavailable. Errors are swallowed into an empty transcript so the
  * pipeline degrades gracefully.
  */
-async function transcribe(filePath, { model = 'base', jobId } = {}) {
+async function transcribe(filePath, { model = 'base', jobId, audioTrack = 0, trackCount = 1 } = {}) {
+  if (audioTrack === 'none' || !trackCount) return { available: true, segments: [] };
   const mod = loadWhisper();
   if (!mod) return { available: false, segments: [] };
 
-  let wav;
+  const wav = path.join(os.tmpdir(), `sf_${randomUUID()}.wav`);
   try {
-    wav = await extractAudio(filePath, jobId);
+    await extractAudio(filePath, wav, { jobId, audioTrack, trackCount });
     const nodewhisper = mod.nodewhisper || mod.default || mod;
     const raw = await nodewhisper(wav, {
       modelName: model,
@@ -81,8 +84,8 @@ async function transcribe(filePath, { model = 'base', jobId } = {}) {
     console.warn('[transcribe] failed:', err.message);
     return { available: true, segments: [], error: err.message };
   } finally {
-    if (wav && fs.existsSync(wav)) {
-      try { fs.unlinkSync(wav); } catch (_) { /* ignore */ }
+    for (const file of [wav, `${wav}.srt`]) {
+      try { fs.rmSync(file, { force: true }); } catch (_) { /* ignore */ }
     }
   }
 }

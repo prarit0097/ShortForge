@@ -3,8 +3,8 @@
 A lightweight **Windows desktop app** that turns long videos and movies (1 GB–10 GB) into
 short clips **scene-by-scene with full coverage** — nothing gets skipped. Optional **AI layer**
 (OpenRouter) adds scene descriptions, virality scores, titles, captions, hashtags, and a
-per-clip crop hint. Video processing is local. Optional AI enrichment sends a still frame and
-may include a transcript excerpt.
+per-clip crop hint. Video processing is local. Optional OpenRouter enrichment asks before
+sending still frames. Sharing transcript excerpts is off by default.
 
 
 ## Maintainer and project overview
@@ -32,6 +32,9 @@ Built by [Prarit Sidana](https://praritsidana.com/). See the [ShortForge project
   retain the whole game frame or keep the original framing for a horizontal export.
 - **Audio and projects** — choose a track, mix tracks, or mute. Save the clip plan and resume
   editing later with the same recording and available renders.
+- **Local highlight suggestions** — find gameplay moments from changes in motion and sound,
+  then review the ranked clips. **Watch recordings** lists new OBS or replay-buffer files once
+  they stop changing and lets you choose which one to import.
 
 ## Requirements
 

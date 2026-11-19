@@ -69,6 +69,12 @@
             </div>
             <button class="ghost-btn" id="changeFile">Change</button>
           </div>
+          <div class="recording-watch">
+            <button class="ghost-btn" id="watchRecordingsBtn" type="button">Watch recordings</button>
+            <button class="ghost-btn hidden" id="stopWatchingBtn" type="button">Stop watching</button>
+            <p class="hint" id="watchStatus" role="status">Choose an OBS or capture folder to see new recordings.</p>
+          </div>
+          <ul class="recording-list hidden" id="availableRecordings" aria-label="Recordings ready to import"></ul>
         </div>
 
         <section class="panel hidden" id="editorPanel" aria-labelledby="editorTitle">
@@ -183,11 +189,12 @@
             </label>
             <label class="field checkbox">
               <input type="checkbox" id="burnCaptions" />
-              <span>Burn AI captions (needs AI + Whisper)</span>
+              <span>Burn captions (needs local Whisper)</span>
             </label>
           </div>
           <div class="panel-actions">
             <button class="primary-btn" id="analyzeBtn">Analyze video →</button>
+            <button class="ghost-btn hidden" id="manualMarkBtn" type="button">Mark manually</button>
             <span class="hint" id="analyzeHint">We’ll detect scenes and show how many shorts you’ll get before cutting.</span>
           </div>
         </div>
@@ -203,6 +210,7 @@
               <button class="chip" id="enrichBtn" title="Analyze every clip with AI">✨ Enhance with AI</button>
             </div>
           </div>
+          <p class="hint ai-disclosure hidden" id="aiDisclosure"></p>
           <div class="clip-grid" id="clipGrid"></div>
           <div class="panel-actions sticky-actions">
             <button class="primary-btn big" id="processBtn">▶ Start processing (<span id="selCount">0</span> shorts)</button>
@@ -234,6 +242,11 @@
       <div class="modal-body">
         <section class="set-section">
           <h4>OpenRouter AI</h4>
+          <p class="hint ai-settings-note">Optional enrichment sends still frames from the clips being analyzed to OpenRouter. Gameplay scans run locally.</p>
+          <label class="field checkbox" for="shareTranscriptContext">
+            <input type="checkbox" id="shareTranscriptContext" />
+            <span>Share transcript excerpts with OpenRouter</span>
+          </label>
           <label class="field">
             <span>API key <a class="link" id="orLink">(get one at openrouter.ai)</a></span>
             <div class="key-row">

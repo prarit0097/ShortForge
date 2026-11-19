@@ -20,13 +20,16 @@ const hwaccel = require('./services/hwaccel');
 const { probe } = require('./services/probe');
 const { extractThumbs, thumbAsDataUri } = require('./services/thumbnails');
 const { analyzeVideo, renderVideo } = require('./services/pipeline');
+const { candidateShortlist, enrichmentSamples } = require('./services/highlight-enrichment');
 const projects = require('./services/projects');
+const { watchRecordings } = require('./services/watch-recordings');
 const exporter = require('./services/exporter');
 const openrouter = require('./services/openrouter');
 const transcribe = require('./services/transcribe');
 const { STAGES } = require('./constants');
 
 let getWin = () => null;
+let recordingWatcher;
 
 function emit(data) {
   const win = getWin();
@@ -74,6 +77,27 @@ function checkedSegment(segment, duration) {
   return { ...segment, end: Math.min(end, duration), duration: Math.min(end, duration) - start };
 }
 
+async function localTranscript(filePath, settings, meta, jobId) {
+  if (settings.audioTrack === 'none' || !meta.hasAudio || !transcribe.isAvailable()) return [];
+  const source = fs.statSync(filePath);
+  const revision = JSON.stringify([source.size, source.mtimeMs, settings.whisperModel, settings.audioTrack ?? 0]);
+  const hash = crypto.createHash('sha256').update(revision).digest('hex').slice(0, 20);
+  const cache = path.join(workDirFor(filePath), `transcript-${hash}.json`);
+  try { return JSON.parse(fs.readFileSync(cache, 'utf8')); } catch (_) { /* cache miss */ }
+  progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing selected audio locally…');
+  const result = await transcribe.transcribe(filePath, {
+    model: settings.whisperModel, jobId, audioTrack: settings.audioTrack, trackCount: meta.audioTracks.length,
+  });
+  if (jobs.isCancelled(jobId)) throw new jobs.CancelledError();
+  const segments = result.segments || [];
+  if (!result.error) try {
+    fs.mkdirSync(path.dirname(cache), { recursive: true });
+    fs.writeFileSync(cache, JSON.stringify(segments), 'utf8');
+  } catch (_) { /* keep rendering even when the cache is unwritable */ }
+  progress(jobId, STAGES.TRANSCRIBE, 100, segments.length ? `${segments.length} transcript lines` : 'No speech detected');
+  return segments;
+}
+
 /** Bounded-concurrency map over items. */
 async function pool(items, limit, fn) {
   const results = new Array(items.length);
@@ -91,6 +115,7 @@ async function pool(items, limit, fn) {
 function registerIpc(winGetter) {
   getWin = winGetter;
   settingsStore.migrate(); // one-time: old blur default → full-screen fill
+  app.once('before-quit', () => recordingWatcher?.stop());
 
   // ---- Pickers ---------------------------------------------------------------
   ipcMain.handle('dialog:pickVideos', async () => {
@@ -158,6 +183,30 @@ function registerIpc(winGetter) {
 
   // ---- Hardware --------------------------------------------------------------
   ipcMain.handle('hw:detect', async () => hwaccel.detect());
+
+  ipcMain.handle('recordings:watch', async () => {
+    const result = await dialog.showOpenDialog(getWin(), {
+      title: 'Choose an OBS recordings folder', properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    const [folder] = result.filePaths;
+    function send(payload) {
+      const win = getWin();
+      if (win && !win.isDestroyed()) win.webContents.send('recordings:available', payload);
+    }
+    const watcher = await watchRecordings(folder, {
+      onRecording: (filePath) => send({ filePath, name: path.basename(filePath) }),
+      onError: (error) => send({ error: error.message }),
+    });
+    recordingWatcher?.stop();
+    recordingWatcher = watcher;
+    return { folder };
+  });
+
+  ipcMain.handle('recordings:stop', () => {
+    recordingWatcher?.stop();
+    recordingWatcher = null;
+  });
 
   ipcMain.handle('projects:save', async (_e, draft) => {
     const result = await dialog.showSaveDialog(getWin(), {
@@ -241,56 +290,64 @@ function registerIpc(winGetter) {
   // ---- AI enrich -------------------------------------------------------------
   ipcMain.handle('ai:enrich', async (_e, { filePath, segments, settings, jobId }) => {
     jobs.create(jobId);
-    const key = settingsStore.getApiKey();
-    if (!key) { jobs.done(jobId); throw new Error('Set your OpenRouter API key in Settings first.'); }
-
-    const models = { vision: settings.aiModelVision, text: settings.aiModelText };
     try {
-      // Optional transcription (captions + better titles).
+      const key = settingsStore.getApiKey();
+      if (!key) throw new Error('Set your OpenRouter API key in Settings first.');
+      const mode = settings.analysisMode;
+      const candidates = candidateShortlist(segments, mode);
+      if (!candidates.length) return { segments: [], hasTranscript: false };
+      const gameplay = mode === 'gameplay';
+      const shareTranscript = settings.shareTranscriptContext === true;
+      const result = await dialog.showMessageBox(getWin(), {
+        type: 'question', buttons: ['Send to OpenRouter', 'Cancel'], defaultId: 1, cancelId: 1,
+        title: 'OpenRouter enrichment', message: `Enrich ${candidates.length} ${candidates.length === 1 ? 'clip' : 'clips'}?`,
+        detail: `ShortForge will send ${gameplay ? 'up to three still frames' : 'one still frame'} per clip` +
+          (shareTranscript ? ' and up to 800 characters of available transcript per clip.' : '.') +
+          ' The source video stays on this PC. Your OpenRouter model may charge for each request.',
+      });
+      if (result.response !== 0 || jobs.isCancelled(jobId)) return { cancelled: true };
+
+      const models = { vision: settings.aiModelVision, text: settings.aiModelText };
       let transcriptSegs = [];
-      if (settings.useTranscript !== false && transcribe.isAvailable()) {
-        progress(jobId, STAGES.TRANSCRIBE, 5, 'Transcribing audio (Whisper)...');
-        const tr = await transcribe.transcribe(filePath, { model: settings.whisperModel, jobId });
-        transcriptSegs = tr.segments || [];
-        progress(jobId, STAGES.TRANSCRIBE, 100,
-          transcriptSegs.length ? `${transcriptSegs.length} transcript lines` : 'No speech detected');
+      if (shareTranscript && settings.audioTrack !== 'none' && transcribe.isAvailable()) {
+        transcriptSegs = await localTranscript(filePath, settings, await probe(filePath, { jobId }), jobId);
       }
       if (jobs.isCancelled(jobId)) return { cancelled: true };
 
       let done = 0;
-      const enriched = await pool(segments, 3, async (seg) => {
+      const enriched = await pool(candidates, 3, async (seg) => {
         if (jobs.isCancelled(jobId)) return seg;
-        let dataUri = null;
+        let frames = [];
         try {
-          const [thumb] = await extractThumbs(filePath, [checkedSegment(seg, Infinity)],
+          const samples = enrichmentSamples(checkedSegment(seg, Infinity), mode);
+          const images = await extractThumbs(filePath, samples,
             path.join(workDirFor(filePath), 'thumbs'), { jobId });
-          if (thumb?.thumbPath) dataUri = thumbAsDataUri(thumb.thumbPath);
+          frames = images.filter((image) => image.thumbPath).map((image) => thumbAsDataUri(image.thumbPath));
         } catch (err) {
           if (err?.isCancelled) return seg;
         }
         const tText = transcribe.textForRange(transcriptSegs, seg.start, seg.end);
         let ai = {};
         try {
-          ai = await openrouter.enrichSegment(key, models, seg, dataUri, tText);
+          const excerpt = shareTranscript ? tText : '';
+          if (!frames.length && !excerpt) throw new Error('No preview frame or shared transcript could be read.');
+          ai = await openrouter.enrichSegment(key, models, seg, frames, excerpt,
+            { gameplay, signal: jobs.get(jobId)?.controller.signal });
         } catch (err) {
           ai = { aiError: err.message, title: seg.title || `Short ${seg.index + 1}` };
         }
         done += 1;
-        progress(jobId, STAGES.AI, (done / segments.length) * 100, `AI analysed ${done}/${segments.length}`);
-        return { ...seg, ...ai, transcript: tText };
+        progress(jobId, STAGES.AI, (done / candidates.length) * 100, `AI analysed ${done}/${candidates.length} clips`);
+        return { ...seg, ...ai };
       });
 
       // If the user cancelled during the pool, don't return partial enrichment.
       if (jobs.isCancelled(jobId)) return { cancelled: true };
 
-      // Persist transcript on disk so process() can reuse it for caption burn-in.
-      try {
-        const tf = path.join(workDirFor(filePath), 'transcript.json');
-        fs.mkdirSync(path.dirname(tf), { recursive: true });
-        fs.writeFileSync(tf, JSON.stringify(transcriptSegs), 'utf8');
-      } catch (_) { /* ignore */ }
-
       return { segments: enriched, hasTranscript: transcriptSegs.length > 0 };
+    } catch (err) {
+      if (err?.isCancelled) return { cancelled: true };
+      throw err;
     } finally {
       jobs.done(jobId);
     }
@@ -308,12 +365,7 @@ function registerIpc(winGetter) {
       fs.mkdirSync(clipsDir, { recursive: true });
 
       // Load transcript for caption burn-in if requested.
-      let transcriptSegs = [];
-      if (settings.burnCaptions) {
-        try {
-          transcriptSegs = JSON.parse(fs.readFileSync(path.join(workDir, 'transcript.json'), 'utf8'));
-        } catch (_) { transcriptSegs = []; }
-      }
+      const transcriptSegs = settings.burnCaptions ? await localTranscript(filePath, settings, meta, jobId) : [];
       const captionsSkipped = !!settings.burnCaptions && transcriptSegs.length === 0;
 
       const burnTitle = settings.aiEnabled && settings.burnTitle !== false;

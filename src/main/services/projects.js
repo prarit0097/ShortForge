@@ -61,13 +61,16 @@ function projectClips(items) {
     }
     indices.add(index);
     const result = { index, start, end, duration: end - start, selected: clip.selected !== false };
-    for (const key of ['title', 'caption', 'aiDescription', 'reason']) {
+    for (const key of ['title', 'caption', 'aiDescription', 'reason', 'eventType', 'signal']) {
       if (typeof clip[key] === 'string') result[key] = clip[key].slice(0, 1000);
     }
     if (Number.isFinite(clip.cropBias)) result.cropBias = Math.max(-1, Math.min(1, clip.cropBias));
     if (Number.isFinite(clip.peak) && clip.peak >= 0) result.peak = clip.peak;
     if (Number.isFinite(clip.viralityScore)) result.viralityScore = clip.viralityScore;
     if (Number.isFinite(clip.confidence)) result.confidence = clip.confidence;
+    for (const key of ['manual', 'titleEdited', 'cropEdited', 'aiKeep']) {
+      if (typeof clip[key] === 'boolean') result[key] = clip[key];
+    }
     if (Array.isArray(clip.hashtags)) {
       result.hashtags = clip.hashtags.filter((item) => typeof item === 'string').slice(0, 20).map((item) => item.slice(0, 100));
     }

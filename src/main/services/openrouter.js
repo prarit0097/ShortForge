@@ -44,6 +44,9 @@ function extractJson(text) {
  */
 async function fetchJson(url, options = {}, timeoutMs = 60000) {
   const ctrl = new AbortController();
+  const cancel = () => ctrl.abort();
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener('abort', cancel, { once: true });
   const tid = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: ctrl.signal });
@@ -53,20 +56,22 @@ async function fetchJson(url, options = {}, timeoutMs = 60000) {
     }
     return await res.json();
   } catch (err) {
-    if (err && err.name === 'AbortError') {
+    if (err?.name === 'AbortError' && !options.signal?.aborted) {
       throw new Error(`OpenRouter request timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
     throw err;
   } finally {
+    options.signal?.removeEventListener('abort', cancel);
     clearTimeout(tid);
   }
 }
 
-async function chat(key, model, messages, { maxTokens = 700, temperature = 0.7, timeoutMs = 60000 } = {}) {
+async function chat(key, model, messages, { maxTokens = 700, temperature = 0.7, timeoutMs = 60000, signal } = {}) {
   const data = await fetchJson(`${BASE}/chat/completions`, {
     method: 'POST',
     headers: HEADERS(key),
     body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
+    signal,
   }, timeoutMs);
   return data.choices && data.choices[0] && data.choices[0].message
     ? data.choices[0].message.content
@@ -121,30 +126,35 @@ longer video and return STRICT JSON only, no prose. Fields:
  "subjectX": <number -1 to 1, horizontal position of the main subject: -1 left, 0 center, 1 right>,
  "keep": <true if this makes a good standalone short, false if it's filler>}`;
 
+const GAMEPLAY_EVENTS = ['chase', 'escape', 'crash', 'near miss', 'stunt', 'mission outcome', 'funny moment', 'other'];
+
 /**
  * Enrich one segment. Sends the thumbnail (vision) plus optional transcript text.
  * @returns object merged onto the segment.
  */
-async function enrichSegment(key, models, seg, dataUri, transcriptText) {
+async function enrichSegment(key, models, seg, images, transcriptText, { gameplay = false, signal } = {}) {
+  const frames = (Array.isArray(images) ? images : [images]).filter(Boolean).slice(0, gameplay ? 3 : 1);
+  const system = gameplay ? `${SYSTEM}\nFor gameplay, include an eventType chosen from: ${GAMEPLAY_EVENTS.join(', ')}. Use other when the visible sequence and any provided transcript do not establish the event.` : SYSTEM;
   const userContent = [
     {
       type: 'text',
       text:
         `Scene #${seg.index + 1}, length ${seg.duration}s.` +
+        (gameplay && frames.length > 1 ? `\nThe ${frames.length} still frames are in chronological order.` : '') +
         (transcriptText ? `\nTranscript: "${transcriptText.slice(0, 800)}"` : '') +
         `\nReturn the JSON described in the system message.`,
     },
   ];
-  if (dataUri) userContent.push({ type: 'image_url', image_url: { url: dataUri } });
+  for (const url of frames) userContent.push({ type: 'image_url', image_url: { url } });
 
   const content = await chat(
     key,
     models.vision,
     [
-      { role: 'system', content: SYSTEM },
+      { role: 'system', content: system },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 500, temperature: 0.6 }
+    { maxTokens: 500, temperature: 0.6, signal }
   );
 
   const json = extractJson(content) || {};
@@ -153,9 +163,10 @@ async function enrichSegment(key, models, seg, dataUri, transcriptText) {
     title: json.title || `Short ${seg.index + 1}`,
     caption: json.caption || '',
     hashtags: Array.isArray(json.hashtags) ? json.hashtags : [],
-    viralityScore: Number.isFinite(json.viralityScore) ? Math.round(json.viralityScore) : null,
+    viralityScore: Number.isFinite(json.viralityScore) ? Math.max(0, Math.min(100, Math.round(json.viralityScore))) : null,
     cropBias: Number.isFinite(json.subjectX) ? Math.max(-1, Math.min(1, json.subjectX)) : 0,
     aiKeep: json.keep !== false,
+    ...(gameplay ? { eventType: GAMEPLAY_EVENTS.includes(json.eventType) ? json.eventType : 'other' } : {}),
   };
 }
 

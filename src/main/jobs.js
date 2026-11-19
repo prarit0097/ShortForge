@@ -21,7 +21,7 @@ class CancelledError extends Error {
 }
 
 function create(jobId) {
-  const job = { procs: new Set(), cancelled: false };
+  const job = { procs: new Set(), cancelled: false, controller: new AbortController() };
   jobs.set(jobId, job);
   return job;
 }
@@ -46,6 +46,7 @@ function cancel(jobId) {
   const job = jobs.get(jobId);
   if (!job) return false;
   job.cancelled = true;
+  job.controller.abort();
   for (const proc of job.procs) {
     try {
       proc.kill('SIGKILL');

@@ -112,7 +112,7 @@ optional; stage 6 is **Process**; stage 7 is **Download**.
 3. SEGMENT     full-coverage algorithm → consecutive [start,end] clips
    ─────────── "Analyze" returns the plan; UI shows the clip count ───────────
 4. THUMBS      visible clip cards request preview frames in the background
-5. AI ENRICH   (optional) Whisper transcript + OpenRouter vision per clip →
+5. AI ENRICH   (optional) local Whisper + approved OpenRouter still frames →
                title, caption, hashtags, virality score, smart-crop bias
 6. CUT         ffmpeg per clip: reframe (blur/crop/smart) + AI title + captions,
                hardware-accelerated, run 2 clips in parallel, live progress
@@ -162,7 +162,7 @@ key never reaches the web UI.
 
 | AI feature | How it's implemented |
 |---|---|
-| Scene understanding | A keyframe (thumbnail) of each clip is sent to an OpenRouter **vision** model. |
+| Scene understanding | A scene clip sends one still frame per approved request. Gameplay clips can send three in chronological order so the model can use the lead-up and aftermath. |
 | Title / caption / hashtags | Same vision call returns strict JSON with these fields. |
 | Virality score (0–100) | The model rates how engaging/shareable each clip is; used for ranking. |
 | Smart crop | The model reports the subject's horizontal position (-1..1); used as crop bias in crop mode. |
@@ -309,11 +309,14 @@ installation. Optional captions require a compiled Whisper executable and a suit
 
 ### Edit gameplay highlights
 
-1. Import a finished OBS, capture-card, or console video. Select **Gameplay highlights** and seek to the event in **Source preview**. If the original cannot play in the editor, select **Generate playback preview** to create a short local H.264 proxy around the current position.
-2. Choose **Mark timestamp** to add the event with pre-roll and post-roll. Use **Review clip** to play that range, edit its start and end, and set its horizontal crop. The caption safe-area guide shows where to position text for vertical delivery.
-3. Choose **HUD-safe 9:16** to keep the full game frame inside a vertical canvas. Choose **Original framing** for the source aspect ratio. For recordings with multiple audio tracks, select the game or mic track by name, mix the tracks, or mute the export. A playback proxy uses the selected track or mix.
-4. Use **Render clip** for the current range. Edits flag the clip for rerendering and keep the previous render available for comparison. Batch export uses the currently rendered selections.
-5. **Save project** writes a `.shortforge` file with the source path, selections, trims, crop, titles, and output settings. An unchanged source can reopen with still-available cached renders. The source video and rendered MP4 files stay on disk separately from the project file.
+1. Import a finished OBS, capture-card, or console video. **Watch recordings** can monitor an OBS recording or replay-buffer folder for new files with 10 seconds of quiet. ShortForge lists ready files and imports the one you choose.
+2. Select **Gameplay highlights** and click **Find highlights**. The local scan ranks up to 20 non-overlapping suggestions using low-resolution motion and changes in audio level. Changes in common HUD regions can boost a candidate that already has enough activity. The scan includes up to four seconds before the peak and six after. Use **Mark manually** or **Mark timestamp** in **Source preview** to add a moment yourself. If the original cannot play in the editor, **Generate playback preview** creates a short local H.264 proxy around the current position.
+3. Use **Review clip** to play the range, edit its start and end, and set its horizontal crop. The caption safe-area guide shows where to position text for vertical delivery.
+4. Choose **HUD-safe 9:16** to keep the full game frame inside a vertical canvas. Choose **Original 16:9** to keep a 16:9 recording at its original framing. For recordings with multiple audio tracks, select the game or mic track by name, mix the tracks, or mute the export. A playback proxy uses the selected track or mix.
+5. Use **Render clip** for the current range. Edits flag the clip for rerendering and keep the previous render available for comparison. Batch export uses the currently rendered selections.
+6. **Save project** writes a `.shortforge` file with the source path, selections, trims, crop, titles, and output settings. An unchanged source can reopen with still-available cached renders. The source video and rendered MP4 files stay on disk separately from the project file.
+
+The local score measures activity. For optional semantic labels such as chase, near miss, crash, or stunt, use **Enhance with AI** on selected clips and approve the OpenRouter prompt. Each gameplay pass enriches up to ten candidates. The pass preserves manually edited titles and crops. **Share transcript context** is off by default. Turning it on lets a request include up to 800 characters of available transcript per clip. Local detection was tested with synthetic footage. GTA VI accuracy and dynamic subject tracking still require representative footage for calibration and review.
 
 ---
 
@@ -329,7 +332,7 @@ installation. Optional captions require a compiled Whisper executable and a suit
 - **Output quality** — High (near-original, default) / Balanced (faster, smaller) / Max (best, slowest).
 - **Enhance** — light sharpen + denoise + colour pop.
 - **Burn AI hook title** — overlay the AI title on each clip (AI on). Default on.
-- **Burn AI captions** — burn Whisper subtitles (needs AI + Whisper).
+- **Burn captions** — use local Whisper on the selected audio track or mix to create burned-in subtitles.
 
 **Settings modal (⚙):**
 - **OpenRouter API key** — Save / Test. Stored encrypted (DPAPI).
@@ -379,8 +382,8 @@ installation. Optional captions require a compiled Whisper executable and a suit
 
 ## 14. Security & privacy
 
-- **No uploads** — videos are read from disk and processed locally; only AI *thumbnails/text*
-  (if you enable AI) are sent to OpenRouter.
+- The source file, local highlight scan, renders, and exports stay on the PC. Approved OpenRouter
+  enrichment can send still frames and, when separately enabled, a transcript excerpt.
 - **API key** is encrypted at rest with Windows DPAPI (`safeStorage`) and used only in the
   main process — it never reaches the web UI.
 - **Renderer is locked down** — `contextIsolation: true`, `nodeIntegration: false`, a strict
@@ -413,6 +416,7 @@ installation. Optional captions require a compiled Whisper executable and a suit
 | **1.0.5** | **Output quality + 3-round hardening.** Added quality levels (High near-original default / Balanced / Max), forced `yuv420p` for platform compatibility (incl. Intel QSV), Lanczos scaling, and an optional Enhance (denoise+sharpen) filter. Then ran a deep multi-agent review **three times** (25 confirmed bugs found and fixed): real FFmpeg error messages, OpenRouter request+body timeouts, robust JSON parsing, per-thumbnail fault tolerance, a unified `CancelledError` (no more string-matching), `try/finally` on every IPC handler (no job leaks / stuck UI), bounded progress buffers immune to chunk splits, path-hash work dirs (no same-name collisions), honest Whisper availability, VFR fps sanity cap, font/path resilience, and a captions-skipped warning. |
 | **1.0.6** | Clip plans redistribute short remainders and respect the maximum length. Render and export results report per-clip failures and cancellation, successful renders remain available, and selected failed cuts can be retried. Added a Node regression suite and an FFmpeg render smoke test. |
 | **1.1.0** | Gameplay editor with source playback, manual highlights, clip review and trim, HUD-safe 9:16 and original framing, per-clip render, and project save/resume. Added audio track selection, mixing, and mute. Clip plans appear before lazy thumbnail generation. |
+| **1.2.0** | Added ranked local gameplay suggestions, monitoring for finished recordings, and limited OpenRouter enrichment with chronological still frames, a per-batch consent prompt, and optional transcript context. |
 
 ---
 
@@ -434,6 +438,8 @@ Run the relevant tests at each phase, update this guide and changelog, then comm
 **Phase 1 verification for 1.0.6.** All 16 tests passed in the staged source snapshot, and `npm run pack` produced the unpacked Windows app. The suite includes a generated OBS-style MKV, audio-only interval rejection, concurrent exports, cancellation, and a simulated destination without hard links. On volumes without hard links, export uses an exclusive copy and the final name can be visible while an active copy finishes.
 
 **Phase 2 verification for 1.1.0.** All 23 tests passed in the staged source snapshot. The Windows Electron smoke test (`.\node_modules\.bin\electron.cmd build/smoke-editor.js`) used the real preload and IPC to import a generated two-track MKV, preview selected audio, mark and trim a highlight, render and rerender in 1080×1920, play the previous render at its original bounds, export, and reopen the project. The media tests cover rotated silent VFR MOV and nonzero-start MPEG-TS. The unpacked Windows build also passed.
+
+**Phase 3 verification for 1.2.0.** All 39 tests passed in the staged snapshot, and the unpacked Windows build succeeded. The Electron smoke test found and ranked two labeled synthetic peaks, preserved a manual marker, prevented duplicates on rescan, and imported a watched recording only after a user action and at least ten seconds of quiet time. Watch events stopped when requested. OpenRouter requests were tested with a mocked service. No real GTA VI recordings were used.
 
 **This is a standing rule for this project:**
 

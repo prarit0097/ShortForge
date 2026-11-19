@@ -5,12 +5,21 @@ const { STAGES } = require('../constants');
 const { probe } = require('./probe');
 const { detectScenes, detectKeyframes } = require('./scenes');
 const { buildSegments } = require('./segmenter');
+const { detectHighlights } = require('./highlights');
 const { cutAll } = require('./cutter');
 
 async function analyzeVideo({ filePath, settings, jobId, inputArgs = [], onProgress = () => {} }) {
   const meta = await probe(filePath, { jobId, inputArgs });
   if (!meta.width || !meta.height || !(meta.duration > 0)) throw new Error('No playable video was found.');
   onProgress(STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
+  if (settings.analysisMode === 'gameplay') {
+    const candidates = await detectHighlights(filePath, meta, {
+      jobId, inputArgs, audioTrack: settings.audioTrack,
+      onProgress: (percent) => onProgress(STAGES.HIGHLIGHTS, percent, 'Finding gameplay highlights…'),
+    });
+    const segments = candidates.map((clip) => ({ ...clip, selected: true }));
+    return { meta, sceneCount: null, segments, shortsCount: segments.length };
+  }
   const options = { jobId, inputArgs, videoStreamIndex: meta.videoStreamIndex };
   let sceneTimes;
   if (settings.scanMode === 'fast') {

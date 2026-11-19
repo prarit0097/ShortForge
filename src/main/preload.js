@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('api', {
   previewClip: (payload) => invoke('video:previewClip', payload),
   saveProject: (draft) => invoke('projects:save', draft),
   openProject: () => invoke('projects:open'),
+  watchRecordings: () => invoke('recordings:watch'),
+  stopWatchRecordings: () => invoke('recordings:stop'),
   enrich: (payload) => invoke('ai:enrich', payload),
   process: (payload) => invoke('process:run', payload),
   exportClips: (payload) => invoke('export:batch', payload),
@@ -48,5 +50,10 @@ contextBridge.exposeInMainWorld('api', {
     const listener = (_e, data) => cb(data);
     ipcRenderer.on('job:progress', listener);
     return () => ipcRenderer.removeListener('job:progress', listener);
+  },
+  onRecordingAvailable: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('recordings:available', listener);
+    return () => ipcRenderer.removeListener('recordings:available', listener);
   },
 });

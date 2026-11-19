@@ -26,6 +26,7 @@ const DEFAULTS = {
   outputQuality: 'high', // high (near-original) | balanced | max
   enhance: false, // light sharpen + denoise + colour pop
   aiEnabled: false,
+  shareTranscriptContext: false,
   hwAccel: 'auto', // auto | nvenc | qsv | amf | cpu
   exportConcurrency: 2,
   cutConcurrency: 2, // clips encoded in parallel
@@ -39,6 +40,7 @@ const DEFAULTS = {
 const STAGES = {
   PROBE: 'probe',
   SCENES: 'scenes',
+  HIGHLIGHTS: 'highlights',
   SEGMENT: 'segment',
   THUMBS: 'thumbs',
   AI: 'ai',

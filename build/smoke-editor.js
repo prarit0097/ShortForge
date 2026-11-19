@@ -19,6 +19,7 @@ const userData = path.join(workspace, 'userData');
 const source = path.join(workspace, 'OBS recording.mkv');
 const project = path.join(workspace, 'Gameplay clip.shortforge');
 const exportsDir = path.join(workspace, 'exports');
+const watchDir = path.join(workspace, 'OBS recordings');
 const rendererErrors = [];
 let window;
 let revealedPath;
@@ -90,6 +91,65 @@ async function checkRender(file, duration) {
   return meta.duration;
 }
 
+async function smokeHighlightsAndWatcher() {
+  const fixture = path.join(workspace, 'Two bursts.mkv');
+  const staged = path.join(watchDir, 'Ranked gameplay.mkv.part');
+  const finalized = path.join(watchDir, 'Ranked gameplay.mkv');
+  ffmpeg([
+    '-f', 'lavfi', '-i', "color=s=160x90:r=16:d=24,drawbox=x=20:y=20:w=49:h=35:c=white:t=fill:enable='between(t,4,4.5)',drawbox=x=75:y=20:w=49:h=35:c=white:t=fill:enable='between(t,18,18.5)'",
+    '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono:d=24',
+    '-f', 'lavfi', '-i', "aevalsrc='if(between(t,18,18.5),0.64*sin(2*PI*440*t),0)':s=8000:d=24",
+    '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-c:a', 'pcm_s16le',
+    '-metadata:s:a:0', 'title=Game audio', '-metadata:s:a:1', 'title=Highlight signal', fixture,
+  ]);
+  fs.mkdirSync(watchDir);
+  fs.copyFileSync(fixture, path.join(watchDir, 'Already present.mkv'));
+  await click('#watchRecordingsBtn');
+  await waitFor('document.querySelector("#watchStatus").textContent.startsWith("Watching ")', 'Start watching');
+  fs.copyFileSync(fixture, staged);
+  const finalizingAt = performance.now();
+  fs.renameSync(staged, finalized);
+  await waitFor(`document.querySelector('#watchStatus').textContent === 'Ranked gameplay.mkv is ready to import.'`,
+    'Stable recording alert');
+  assert.ok(performance.now() - finalizingAt >= 10000, 'The recording appeared before the default quiet period');
+  assert.equal(await runInPage('document.querySelector("#fileName").textContent'), 'OBS recording.mkv');
+  assert.equal(await runInPage('document.querySelectorAll("#availableRecordings button").length'), 1);
+  await click('#availableRecordings button[aria-label="Import Ranked gameplay.mkv"]');
+  await waitFor('document.querySelector("#fileName").textContent === "Ranked gameplay.mkv"', 'Explicit watched recording import');
+
+  fs.copyFileSync(fixture, path.join(watchDir, 'Do not report.mkv'));
+  await click('#stopWatchingBtn');
+  await waitFor('document.querySelector("#watchStatus").textContent === "Stopped watching for new recordings."', 'Stop watching');
+  fs.copyFileSync(fixture, path.join(watchDir, 'After stop.mkv'));
+  const stoppedAt = Date.now();
+
+  await setValue('#clipMode', 'gameplay');
+  await setValue('#audioTrack', '1');
+  await setValue('#targetLen', '3');
+  await setValue('#editorSeek', '11.5', ['input']);
+  await click('#editorMark');
+  await waitFor('Boolean(document.querySelector("#clipGrid [data-clip]"))', 'Manual marker on watched recording');
+
+  await click('#analyzeBtn');
+  await waitFor('document.querySelector("#summary").textContent.includes("2 suggestions added")', 'Find two local highlights');
+  const reasons = await runInPage('Array.from(document.querySelectorAll("#clipGrid .clip-reason"), el => el.textContent)');
+  assert.match(reasons[0], /Marked at/);
+  assert.match(reasons[1], /Motion and sound increased together/);
+  assert.match(reasons[2], /Motion increased above the recent baseline/);
+  assert.equal(reasons.length, 3);
+
+  await click('#analyzeBtn');
+  await waitFor('document.querySelector("#summary").textContent.includes("Suggestions overlapped your existing clips")',
+    'Repeat scan deduplicates against existing clips');
+  assert.deepEqual(await runInPage('Array.from(document.querySelectorAll("#clipGrid .clip-reason"), el => el.textContent)'), reasons);
+
+  // Allow the queued file enough time to have passed the real watch period.
+  await delay(Math.max(0, 11500 - (Date.now() - stoppedAt)));
+  assert.equal(await runInPage('document.querySelector("#watchStatus").textContent'), 'Stopped watching for new recordings.');
+  assert.equal(await runInPage('document.querySelectorAll("#availableRecordings button").length'), 1);
+  console.log('Gameplay smoke passed: ranked two real highlights, kept the manual marker, deduplicated a repeat scan, and imported only after opting in.');
+}
+
 async function smoke() {
   ffmpeg([
     '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=6',
@@ -100,7 +160,10 @@ async function smoke() {
   ]);
   settings.save({ hwAccel: 'cpu', aiEnabled: false, _fsMigration: true });
   dialog.showOpenDialog = async (_window, options) => {
-    if (options.properties.includes('openDirectory')) return { canceled: false, filePaths: [exportsDir] };
+    if (options.properties.includes('openDirectory')) {
+      const dir = options.properties.includes('createDirectory') ? exportsDir : watchDir;
+      return { canceled: false, filePaths: [dir] };
+    }
     if (options.filters?.some((filter) => filter.extensions.includes('shortforge'))) {
       return { canceled: false, filePaths: [project] };
     }
@@ -206,6 +269,7 @@ async function smoke() {
     fs.writeFileSync(process.env.SHORTFORGE_SMOKE_SCREENSHOT, image.toPNG());
   }
   console.log(`Editor smoke passed: OBS import, playback preview, ${firstDuration}s and ${secondDuration}s vertical renders, export, project reopen.`);
+  await smokeHighlightsAndWatcher();
 }
 
 function cleanAfterExit() {

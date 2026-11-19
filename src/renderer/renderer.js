@@ -32,7 +32,9 @@ const state = {
   enriched: false,
   mode: 'coverage',
   sceneCount: null,
+  gameplayMessage: '',
   drafts: new Map(),
+  recordings: new Map(),
 };
 
 const editor = window.shortForgeEditor.createClipEditor({
@@ -93,6 +95,7 @@ async function loadSettings() {
   $('enhance').checked = !!s.enhance;
   $('burnCaptions').checked = !!s.burnCaptions;
   $('burnTitle').checked = s.burnTitle !== false;
+  $('shareTranscriptContext').checked = s.shareTranscriptContext === true;
   ensureOption($('aiModelVision'), s.aiModelVision);
   ensureOption($('aiModelText'), s.aiModelText);
   $('whisperModel').value = s.whisperModel;
@@ -120,8 +123,20 @@ function fillSelect(id, options, selected) {
 function setAi(on) {
   state.settings.aiEnabled = on;
   $('aiToggle').classList.toggle('on', on);
+  $('aiToggle').setAttribute('aria-pressed', String(on));
   $('aiState').textContent = on ? 'ON' : 'OFF';
   $('enrichBtn').classList.toggle('hidden', !on);
+  updateAiDisclosure();
+}
+
+function updateAiDisclosure() {
+  const disclosure = $('aiDisclosure');
+  disclosure.classList.toggle('hidden', !state.settings.aiEnabled);
+  const sharing = $('shareTranscriptContext').checked;
+  disclosure.textContent = sharing
+    ? 'AI enrichment sends clip stills and transcript excerpts to OpenRouter.'
+    : 'AI enrichment sends clip stills to OpenRouter. Transcript sharing is off.';
+  if (state.mode === 'gameplay') disclosure.textContent += ' Up to 10 selected clips per pass.';
 }
 /* ---- model dropdowns ---- */
 function ensureOption(sel, val) {
@@ -218,6 +233,7 @@ function gatherSettings() {
     maxLengthSec: Number($('maxLen').value),
     sceneThreshold: Number($('sceneThreshold').value),
     scanMode: $('scanMode').value,
+    analysisMode: state.mode,
     aspectRatio: $('aspectRatio').value,
     reframeMode: $('reframeMode').value,
     audioTrack: ['mix', 'none'].includes($('audioTrack').value) ? $('audioTrack').value : Number($('audioTrack').value),
@@ -232,6 +248,7 @@ function gatherSettings() {
     hwAccel: $('hwAccel').value,
     exportConcurrency: Number($('exportConcurrency').value),
     useTranscript: true,
+    shareTranscriptContext: $('shareTranscriptContext').checked,
   };
 }
 async function persistSettings() {
@@ -268,6 +285,89 @@ async function addVideo() {
   if (f.error) { toast(`Could not read file: ${f.error}`, 'err'); return; }
   selectVideo(f);
 }
+
+async function startRecordingWatch() {
+  const button = $('watchRecordingsBtn');
+  const status = $('watchStatus');
+  button.disabled = true;
+  try {
+    const result = await api.watchRecordings();
+    if (!result?.folder) return;
+    state.recordings.clear();
+    renderRecordings();
+    button.classList.add('hidden');
+    $('stopWatchingBtn').classList.remove('hidden');
+    status.textContent = `Watching ${result.folder} for new recordings.`;
+    $('stopWatchingBtn').focus();
+  } catch (error) {
+    status.textContent = `Could not watch this folder. ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function stopRecordingWatch() {
+  const button = $('stopWatchingBtn');
+  button.disabled = true;
+  try {
+    await api.stopWatchRecordings();
+    button.classList.add('hidden');
+    $('watchRecordingsBtn').classList.remove('hidden');
+    $('watchStatus').textContent = 'Stopped watching for new recordings.';
+    $('watchRecordingsBtn').focus();
+  } catch (error) {
+    $('watchStatus').textContent = `Could not stop watching. ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function recordingAvailable(recording) {
+  if (recording.error) {
+    $('watchStatus').textContent = `Recording watch: ${recording.error}`;
+    return;
+  }
+  state.recordings.delete(recording.filePath);
+  state.recordings.set(recording.filePath, recording.name);
+  if (state.recordings.size > 20) state.recordings.delete(state.recordings.keys().next().value);
+  $('watchStatus').textContent = `${recording.name} is ready to import.`;
+  renderRecordings();
+}
+
+function renderRecordings() {
+  const list = $('availableRecordings');
+  const focusedPath = list.contains(document.activeElement) ? document.activeElement.dataset.path : undefined;
+  list.replaceChildren();
+  list.classList.toggle('hidden', state.recordings.size === 0);
+  for (const [filePath, name] of [...state.recordings].reverse()) {
+    const row = document.createElement('li');
+    const label = document.createElement('span');
+    label.textContent = name;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ghost-btn small';
+    button.textContent = 'Import';
+    button.dataset.path = filePath;
+    button.setAttribute('aria-label', `Import ${name}`);
+    button.addEventListener('click', async () => {
+      if (state.jobId) return;
+      button.disabled = true;
+      try {
+        const meta = await api.probeFile(filePath);
+        if (!meta || meta.error) throw new Error(meta?.error || 'The recording could not be read.');
+        selectVideo(meta);
+      } catch (error) {
+        $('watchStatus').textContent = `Could not import ${name}. ${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    row.append(label, button);
+    list.appendChild(row);
+    if (filePath === focusedPath) button.focus({ preventScroll: true });
+  }
+}
+
 function selectVideo(meta) {
   resetThumbnails();
   state.video = meta;
@@ -275,6 +375,7 @@ function selectVideo(meta) {
   state.exportAttempt = null;
   state.enriched = false;
   state.sceneCount = null;
+  state.gameplayMessage = '';
   state.drafts.clear();
 
   $('dropzone').classList.add('hidden');
@@ -322,27 +423,36 @@ function updateMode() {
   const gameplay = state.mode === 'gameplay';
   $('clipMode').value = state.mode;
   document.querySelectorAll('[data-coverage]').forEach((field) => field.classList.toggle('hidden', gameplay));
-  $('analyzeBtn').textContent = gameplay ? 'Mark a highlight' : 'Analyze video →';
+  $('analyzeBtn').textContent = gameplay ? 'Find highlights' : 'Analyze video →';
+  $('manualMarkBtn').classList.toggle('hidden', !gameplay);
   $('analyzeHint').textContent = gameplay
-    ? 'Seek to a moment in the recording and select Mark timestamp.'
+    ? 'Scan locally for motion and sound peaks, or mark a moment yourself.'
     : 'Detect scene boundaries and see the plan before rendering.';
   $('resultsPanel').classList.toggle('hidden', !gameplay && !state.segments.length);
   if (gameplay || state.segments.length) renderResults();
   updatePresetButtons();
+  updateAiDisclosure();
 }
 
 function switchMode(mode) {
   if (mode === state.mode) return;
-  state.drafts.set(state.mode, { segments: state.segments, enriched: state.enriched, sceneCount: state.sceneCount });
+  state.drafts.set(state.mode, { segments: state.segments, enriched: state.enriched, sceneCount: state.sceneCount, gameplayMessage: state.gameplayMessage });
   state.mode = mode;
   const draft = state.drafts.get(mode);
   state.segments = draft?.segments || [];
   state.sceneCount = draft?.sceneCount ?? null;
+  state.gameplayMessage = draft?.gameplayMessage || '';
   state.enriched = !!draft?.enriched;
   state.exportAttempt = null;
   resetThumbnails();
   editor.showSource();
   updateMode();
+}
+
+function focusMarker() {
+  editor.showSource();
+  $('editorPanel').scrollIntoView({ block: 'start' });
+  $('editorMark').focus({ preventScroll: true });
 }
 
 function addMarker(time) {
@@ -364,6 +474,7 @@ function editClip(index, changes, resetThumb = false) {
   if (clip.outputPath) clip.needsRender = true;
   if (resetThumb) {
     delete clip.thumbPath;
+    clip.aiEnriched = false;
     state.enriched = false;
     renderClips();
   }
@@ -426,27 +537,37 @@ async function openProject() {
 /* ---------------- analyze ---------------- */
 async function analyze() {
   if (!state.video) return;
-  if (state.mode === 'gameplay') {
-    editor.showSource();
-    $('editorPanel').scrollIntoView({ block: 'start' });
-    $('editorMark').focus({ preventScroll: true });
-    return;
-  }
+  const gameplay = state.mode === 'gameplay';
   await persistSettings();
   const jobId = newJobId();
-  showProgress('Analyzing video');
+  showProgress(gameplay ? 'Finding highlights locally' : 'Analyzing video');
   try {
     const res = await api.analyze({ filePath: state.video.path, settings: gatherSettings(), jobId });
     if (res.cancelled) { toast('Analysis cancelled.'); return; }
-    resetThumbnails();
-    editor.showSource();
-    state.segments = res.segments;
-    state.sceneCount = res.sceneCount;
-    state.exportAttempt = null;
-    state.enriched = false;
+    if (gameplay) {
+      let next = state.segments.reduce((index, clip) => Math.max(index, clip.index + 1), 0);
+      const added = [];
+      for (const suggestion of res.segments) {
+        if (state.segments.some((clip) => suggestion.start < clip.end && suggestion.end > clip.start)) continue;
+        added.push({ ...suggestion, index: next++, selected: suggestion.selected !== false });
+      }
+      state.segments.push(...added);
+      state.gameplayMessage = added.length
+        ? `${added.length} ${added.length === 1 ? 'suggestion' : 'suggestions'} added. Review the clips before rendering.`
+        : res.segments.length ? 'Suggestions overlapped your existing clips.'
+          : 'No clear motion or sound peaks. Use Mark manually to add a clip.';
+      toast(state.gameplayMessage, added.length ? 'ok' : '');
+    } else {
+      resetThumbnails();
+      editor.showSource();
+      state.segments = res.segments;
+      state.sceneCount = res.sceneCount;
+      state.exportAttempt = null;
+      state.enriched = false;
+      toast(`${res.shortsCount} shorts planned from ${res.sceneCount} scene changes`, 'ok');
+    }
     renderResults(res);
     setStep(3, 3);
-    toast(`${res.shortsCount} shorts planned from ${res.sceneCount} scene changes`, 'ok');
   } catch (err) {
     toast(`Analyze failed: ${err.message}`, 'err');
   } finally {
@@ -458,7 +579,7 @@ function renderResults(res) {
   $('resultsPanel').classList.remove('hidden');
   const totalDur = state.video.duration;
   const planLabel = state.mode === 'gameplay'
-    ? 'Gameplay highlights'
+    ? state.gameplayMessage || 'Scan locally or mark a moment in the recording.'
     : `${fmtDuration(totalDur)}${state.sceneCount == null ? '' : ` · ${state.sceneCount} scene changes`} · full coverage plan`;
   $('summary').innerHTML = `
     <div class="big-num">${state.segments.length} ${state.segments.length === 1 ? 'clip' : 'clips'}</div>
@@ -602,8 +723,7 @@ function renderClips() {
     title.setAttribute('aria-label', `Title for clip ${seg.index + 1}`);
     title.value = seg.title || `Clip ${seg.index + 1}`;
     title.addEventListener('change', () => {
-      editClip(seg.index, { title: title.value });
-      refreshClipCard(seg);
+      editClip(seg.index, { title: title.value, titleEdited: true });
       editor.refreshClip(seg);
     });
     card.querySelector('.clip-range').textContent = `${fmtClock(seg.start)} → ${fmtClock(seg.end)}`;
@@ -626,7 +746,8 @@ function refreshClipCard(clip, details = $('clipGrid').querySelector(`[data-clip
   if (!details) return;
   const status = clip.needsRender ? 'Rerender needed' : clip.renderStatus === 'failed' ? 'Render failed'
     : clip.renderStatus === 'cancelled' ? 'Render cancelled' : '';
-  details.textContent = [clip.reason, status].filter(Boolean).join(' · ');
+  const event = clip.eventType && clip.eventType !== 'other' ? `AI suggestion: ${clip.eventType}` : '';
+  details.textContent = [clip.reason, event, status].filter(Boolean).join(' · ');
   details.classList.toggle('hidden', !details.textContent);
 }
 function fmtClock(sec) {
@@ -646,30 +767,54 @@ function updateSelCount() {
   const downloadBtn = $('downloadBtn');
   downloadBtn.classList.toggle('hidden', !state.segments.some((s) => !needsRender(s)));
   downloadBtn.disabled = !state.segments.some((s) => s.selected && !needsRender(s));
+  $('enrichBtn').disabled = state.mode === 'gameplay'
+    ? !pending.some(isNotEnriched) : !state.segments.length;
 }
 
 /* ---------------- AI enrich ---------------- */
-async function enrich() {
-  if (!state.settings.aiEnabled) { toast('Turn the AI Layer ON first.', 'err'); return; }
-  if (!state.settings.hasApiKey) { toast('Add your OpenRouter API key in Settings.', 'err'); openSettings(); return; }
+function isNotEnriched(clip) {
+  return !(clip.aiEnriched ?? (clip.viralityScore != null || !!clip.aiDescription));
+}
+
+async function enrich(clips) {
+  if (!state.settings.aiEnabled) { toast('Turn the AI Layer ON first.', 'err'); return false; }
+  if (!state.settings.hasApiKey) { toast('Add your OpenRouter API key in Settings.', 'err'); openSettings(); return false; }
+  const requested = clips ?? (state.mode === 'gameplay'
+    ? state.segments.filter((clip) => clip.selected && needsRender(clip) && isNotEnriched(clip)) : state.segments);
+  if (!requested.length) return true;
   await persistSettings();
   const jobId = newJobId();
   showProgress('Enhancing with AI');
   try {
-    const res = await api.enrich({ filePath: state.video.path, segments: state.segments, settings: gatherSettings(), jobId });
-    if (res.cancelled) { toast('AI enrichment cancelled.'); return; }
-    const originals = new Map(state.segments.map((clip) => [clip.index, clip]));
-    state.segments = res.segments.map((clip) => {
-      const original = originals.get(clip.index);
-      if (original?.cropEdited) clip.cropBias = original.cropBias;
+    const res = await api.enrich({ filePath: state.video.path, segments: requested, settings: gatherSettings(), jobId });
+    if (res.cancelled) { toast('AI enrichment cancelled.'); return false; }
+    const byIndex = new Map(res.segments.map((clip) => [clip.index, clip]));
+    state.segments = state.segments.map((original) => {
+      const enriched = byIndex.get(original.index);
+      if (!enriched || enriched.aiError) return original;
+      const clip = {
+        ...original, ...enriched, aiEnriched: true,
+        title: original.titleEdited ? original.title : enriched.title,
+        cropBias: original.cropEdited ? original.cropBias : enriched.cropBias,
+      };
+      if (clip.outputPath && (clip.title !== original.title || clip.cropBias !== original.cropBias)) clip.needsRender = true;
       editor.refreshClip(clip);
       return clip;
     });
     state.enriched = true;
     renderClips();
-    toast('AI analysis done — titles, scores & smart crop ready', 'ok');
+    updateSelCount();
+    const enhanced = res.segments.filter((clip) => !clip.aiError).length;
+    const failed = res.segments.length - enhanced;
+    const remaining = requested.length - res.segments.length;
+    let message = `${enhanced} ${enhanced === 1 ? 'clip enhanced' : 'clips enhanced'}`;
+    if (failed) message += ` · ${failed} failed`;
+    if (remaining > 0) message += ` · ${remaining} available for another pass`;
+    toast(message, failed ? 'err' : 'ok');
+    return true;
   } catch (err) {
     toast(`AI enhance failed: ${err.message}`, 'err');
+    return false;
   } finally {
     hideProgress();
   }
@@ -683,14 +828,15 @@ async function process(index) {
 
   // If the AI layer is on but clips haven't been enhanced yet, do it now so the AI
   // titles/scores/crop actually drive the output (otherwise AI-on == AI-off).
-  if (state.settings.aiEnabled && !state.enriched) {
+  const gameplay = state.mode === 'gameplay';
+  const forEnrichment = gameplay ? selected.filter(isNotEnriched) : state.enriched ? [] : state.segments;
+  if (state.settings.aiEnabled && forEnrichment.length) {
     if (!state.settings.hasApiKey) {
       toast('AI Layer is ON but no API key set. Add it in Settings, or turn AI off.', 'err');
       openSettings();
       return;
     }
-    await enrich();
-    if (!state.enriched) return; // enrichment failed/cancelled; abort processing
+    if (!await enrich(forEnrichment)) return;
     selected = state.segments.filter(selectedForRender);
   }
 
@@ -727,7 +873,7 @@ async function process(index) {
     showBatchStatus('renderStatus', message, failures);
     toast(message, failures.length ? 'err' : cancelled ? '' : 'ok');
     if (res.captionsSkipped) {
-      toast('Captions were requested but no transcript was available (needs AI Layer + Whisper installed) — shorts were cut without captions.', 'err');
+      toast('No local transcript was available. Check that Whisper is installed and the selected audio has speech.', 'err');
     }
   } catch (err) {
     showBatchStatus('renderStatus', `Processing failed. ${err.message}`);
@@ -862,7 +1008,8 @@ function wire() {
   });
 
   $('analyzeBtn').addEventListener('click', analyze);
-  $('enrichBtn').addEventListener('click', enrich);
+  $('manualMarkBtn').addEventListener('click', focusMarker);
+  $('enrichBtn').addEventListener('click', () => enrich());
   $('processBtn').addEventListener('click', () => process());
   $('downloadBtn').addEventListener('click', batchDownload);
 
@@ -881,6 +1028,10 @@ function wire() {
   $('openSettings').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', closeSettings);
   $('saveSettings').addEventListener('click', async () => { await persistSettings(); closeSettings(); toast('Settings saved', 'ok'); });
+  $('shareTranscriptContext').addEventListener('change', updateAiDisclosure);
+  $('watchRecordingsBtn').addEventListener('click', startRecordingWatch);
+  $('stopWatchingBtn').addEventListener('click', stopRecordingWatch);
+  api.onRecordingAvailable?.(recordingAvailable);
   $('orLink').addEventListener('click', () => api.openExternal('https://openrouter.ai/keys'));
 
   $('saveKey').addEventListener('click', async () => {

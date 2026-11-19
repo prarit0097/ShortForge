@@ -375,6 +375,14 @@ body {
 }
 .clip-check:focus-visible { outline-offset: -3px; }
 .clip-reason { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.recording-watch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 14px; }
+.recording-watch .hint { min-width: 0; overflow-wrap: anywhere; }
+.recording-list { margin-top: 12px; list-style: none; display: grid; gap: 6px; max-height: 208px; overflow: auto; }
+.recording-list li { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--border); }
+.recording-list li span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.ai-disclosure { margin: -7px 0 14px; line-height: 1.45; }
+.ai-settings-note { margin-bottom: 12px; line-height: 1.45; }
+#controlsPanel .panel-actions { flex-wrap: wrap; }
 
 @media (max-width: 1050px) {
   .editor-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
