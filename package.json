@@ -1,13 +1,14 @@
 {
   "name": "shortforge",
   "productName": "ShortForge",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Lightweight Windows desktop app that cuts long videos/movies into scene-by-scene shorts with an optional OpenRouter AI layer.",
   "main": "src/main/main.js",
   "author": "ShortForge",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

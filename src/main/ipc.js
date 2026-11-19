@@ -156,7 +156,8 @@ function registerIpc(winGetter) {
   ipcMain.handle('analyze:run', async (_e, { filePath, settings, jobId }) => {
     jobs.create(jobId);
     try {
-      const meta = await probe(filePath);
+      const meta = await probe(filePath, { jobId });
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
       progress(jobId, STAGES.PROBE, 100, `Duration ${meta.duration.toFixed(1)}s`);
 
       // Scene detection (accurate) or fast keyframe fallback.
@@ -174,7 +175,7 @@ function registerIpc(winGetter) {
         });
         progress(jobId, STAGES.SCENES, 100, `${sceneTimes.length} scene changes`);
       }
-      if (jobs.isCancelled(jobId)) { jobs.done(jobId); return { cancelled: true }; }
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
 
       // Full-coverage segmentation.
       const segments = buildSegments(sceneTimes, meta.duration, settings);
@@ -188,7 +189,6 @@ function registerIpc(winGetter) {
         onProgress: (p) => progress(jobId, STAGES.THUMBS, p, 'Building previews...'),
       });
 
-      jobs.done(jobId);
       return {
         meta,
         sceneCount: sceneTimes.length,
@@ -196,9 +196,10 @@ function registerIpc(winGetter) {
         shortsCount: withThumbs.length,
       };
     } catch (err) {
-      jobs.done(jobId);
       if (err && err.isCancelled) return { cancelled: true };
       throw err;
+    } finally {
+      jobs.done(jobId);
     }
   });
 
@@ -257,8 +258,10 @@ function registerIpc(winGetter) {
   // ---- Process (cut) ---------------------------------------------------------
   ipcMain.handle('process:run', async (_e, { filePath, segments, settings, jobId }) => {
     jobs.create(jobId);
+    let sidecarDir;
     try {
-      const meta = await probe(filePath);
+      const meta = await probe(filePath, { jobId });
+      if (jobs.isCancelled(jobId)) return { cancelled: true };
       const workDir = workDirFor(filePath);
       const clipsDir = path.join(workDir, 'clips');
       fs.mkdirSync(clipsDir, { recursive: true });
@@ -273,25 +276,28 @@ function registerIpc(winGetter) {
       const captionsSkipped = !!settings.burnCaptions && transcriptSegs.length === 0;
 
       const burnTitle = settings.aiEnabled && settings.burnTitle !== false;
+      if (burnTitle || (settings.burnCaptions && transcriptSegs.length)) {
+        sidecarDir = fs.mkdtempSync(path.join(clipsDir, 'prepare-'));
+      }
 
       // Attach per-clip caption + title files. Title is what makes an AI render visibly
       // different; we skip generic placeholder titles so non-AI clips aren't tagged.
       const prepared = segments.map((seg) => {
         const extra = {};
         if (settings.burnCaptions && transcriptSegs.length) {
-          const srtPath = path.join(clipsDir, `seg_${seg.index}.srt`);
+          const srtPath = path.join(sidecarDir, `seg_${seg.index}.srt`);
           extra.subtitlePath = transcribe.writeClipSrt(transcriptSegs, seg.start, seg.end, srtPath);
         }
         const isRealTitle = seg.title && !/^short\s*\d+$/i.test(seg.title.trim());
         if (burnTitle && isRealTitle) {
-          const tf = path.join(clipsDir, `title_${seg.index}.txt`);
+          const tf = path.join(sidecarDir, `title_${seg.index}.txt`);
           fs.writeFileSync(tf, wrapText(seg.title, 20), 'utf8');
           extra.titleFile = tf;
         }
         return { ...seg, ...extra };
       });
 
-      const clips = await cutter.cutAll(filePath, prepared, clipsDir, {
+      const results = await cutter.cutAll(filePath, prepared, clipsDir, {
         jobId,
         ratioKey: settings.aspectRatio,
         reframeMode: settings.reframeMode,
@@ -306,12 +312,12 @@ function registerIpc(winGetter) {
           progress(jobId, STAGES.CUT, overall, `Cutting shorts… ${completed}/${total} done`),
       });
 
-      if (jobs.isCancelled(jobId)) return { cancelled: true };
-      return { clips, workDir: clipsDir, captionsSkipped };
+      return { results, workDir: clipsDir, captionsSkipped, cancelled: jobs.isCancelled(jobId) };
     } catch (err) {
       if (err && err.isCancelled) return { cancelled: true };
       throw err;
     } finally {
+      if (sidecarDir) await fs.promises.rm(sidecarDir, { recursive: true, force: true }).catch(() => {});
       jobs.done(jobId);
     }
   });
@@ -321,10 +327,11 @@ function registerIpc(winGetter) {
     jobs.create(jobId);
     try {
       const results = await exporter.exportClips(clips, destDir, {
+        jobId,
         concurrency: (settings && settings.exportConcurrency) || 2,
-        onProgress: (p, n, total) => progress(jobId, STAGES.EXPORT, p, `Exported ${n}/${total}`),
+        onProgress: (p, n, total) => progress(jobId, STAGES.EXPORT, p, `Exporting shorts… ${n}/${total} done`),
       });
-      return { results, destDir };
+      return { results, destDir, cancelled: jobs.isCancelled(jobId) };
     } finally {
       jobs.done(jobId);
     }

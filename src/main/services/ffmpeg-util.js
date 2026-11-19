@@ -7,15 +7,18 @@ const { ffmpegPath, ffprobePath } = require('../binaries');
 const jobs = require('../jobs');
 
 /** Run ffprobe and return parsed JSON. */
-function ffprobeJson(args) {
+function ffprobeJson(args, { jobId } = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ffprobePath, args, { windowsHide: true });
+    if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
+    const proc = spawn(ffprobePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (jobId) jobs.register(jobId, proc);
     let out = '';
     let err = '';
     proc.stdout.on('data', (d) => (out += d));
     proc.stderr.on('data', (d) => (err += d));
     proc.on('error', reject);
     proc.on('close', (code) => {
+      if (jobId && jobs.isCancelled(jobId)) return reject(new jobs.CancelledError());
       if (code !== 0) return reject(new Error(`ffprobe exited ${code}: ${err}`));
       try {
         resolve(JSON.parse(out));

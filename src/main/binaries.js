@@ -5,12 +5,9 @@
  * In a packaged app the binaries live in app.asar.unpacked (see asarUnpack in package.json).
  */
 
-const { app } = require('electron');
-
 function unpacked(p) {
   if (!p) return p;
-  // When packaged, static binaries are extracted next to the asar archive.
-  return app.isPackaged ? p.replace('app.asar', 'app.asar.unpacked') : p;
+  return p.replace(/([\\/])app\.asar(?=[\\/])/i, '$1app.asar.unpacked');
 }
 
 let ffmpegPath = null;

@@ -15,14 +15,14 @@ function parseFps(rate) {
   return Number.isFinite(fps) && fps > 0 && fps <= MAX_REASONABLE_FPS ? fps : 0;
 }
 
-async function probe(filePath) {
+async function probe(filePath, { jobId } = {}) {
   const data = await ffprobeJson([
     '-v', 'error',
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
     filePath,
-  ]);
+  ], { jobId });
 
   const video = (data.streams || []).find((s) => s.codec_type === 'video') || {};
   const audio = (data.streams || []).find((s) => s.codec_type === 'audio');

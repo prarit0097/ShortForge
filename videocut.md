@@ -124,14 +124,15 @@ optional; stage 6 is **Process**; stage 7 is **Download**.
 Given the scene-change timestamps and your target/min/max length:
 
 1. Candidate cut points = `[0, ...all scene changes inside the video, duration]`.
-2. Starting at `0`, each segment extends toward `start + target`. Among the scene boundaries
-   that fall inside the allowed band `[start+min, start+max]`, it picks the one **closest to
-   the target**. If no boundary falls in the band, it **hard-splits at `max`** (never exceeds).
-3. The final short tail (shorter than `min`) is **merged into the previous segment**.
+2. Starting at `0`, each segment extends toward `start + target`. It picks the closest scene
+   boundary inside `[start+min, start+max]` that still leaves enough time to cover the remainder
+   within those bounds. If no boundary qualifies, it uses the latest feasible cut.
+3. If the duration makes both bounds impossible, the app uses the fewest clips that respect
+   `max` and divides the time evenly. A video shorter than `min` stays in one clip.
 
-Result: consecutive `[start,end]` pairs that cover `0 → duration` with **no gaps and no
-overlaps**, each near your target length, cut on real scene boundaries when possible. This is
-unit-tested across edge cases (dense scenes, sparse scenes, no scenes, tiny video, 2-hour movie).
+Result: consecutive `[start,end]` pairs cover `0 → duration` without gaps or overlaps. The
+planner uses scene boundaries where feasible. Run `npm test` to check cases such as dense
+scenes, missing boundaries, subminimum sources, and the final remainder.
 
 ### Cutting (how a clip is rendered)
 
@@ -300,9 +301,11 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 5. **Select** — Tick/untick clips, rename titles inline, or use **Select all / None / Top 10
    by score**.
 6. **Process** — Click **▶ Start processing**. Clips are cut with reframing (+ AI title/captions
-   if enabled), 2 at a time, with a live progress bar.
-7. **Download** — Click **⬇ Batch download selected**, choose a folder, and all selected clips
-   are exported there.
+   if enabled), 2 at a time, with a live progress bar. The results show each failed clip and its
+   error. Retry processes the selected clips that still need a render.
+7. **Download** — Click **⬇ Batch download selected** and choose a folder. The export reports
+   completed, failed, and cancelled copies. Cancellation lets active copies finish and stops
+   the remaining queue. The exporter preserves existing filenames by choosing a unique name.
 
 ---
 
@@ -400,10 +403,26 @@ The installer bundles everything (Electron + FFmpeg + Whisper), so the target PC
 | **1.0.3** | **AI model picker** with live OpenRouter pricing, cheapest-first, ⭐ curated recommendation (filters out dynamic-priced routers and unreliable free models). **AI now visibly changes output:** burns the AI hook title onto clips, auto-enhances before processing, multilingual Whisper default. |
 | **1.0.4** | **Full-screen shorts by default** — default reframe changed from blurred-pad to **Fill screen** (crop sides), so 9:16 clips fill the whole frame with no blur bars. Reframe options relabelled/reordered; one-time settings migration moves existing installs off the old blur default. |
 | **1.0.5** | **Output quality + 3-round hardening.** Added quality levels (High near-original default / Balanced / Max), forced `yuv420p` for platform compatibility (incl. Intel QSV), Lanczos scaling, and an optional Enhance (denoise+sharpen) filter. Then ran a deep multi-agent review **three times** (25 confirmed bugs found and fixed): real FFmpeg error messages, OpenRouter request+body timeouts, robust JSON parsing, per-thumbnail fault tolerance, a unified `CancelledError` (no more string-matching), `try/finally` on every IPC handler (no job leaks / stuck UI), bounded progress buffers immune to chunk splits, path-hash work dirs (no same-name collisions), honest Whisper availability, VFR fps sanity cap, font/path resilience, and a captions-skipped warning. |
+| **1.0.6** | Clip plans redistribute short remainders and respect the maximum length. Render and export results report per-clip failures and cancellation, successful renders remain available, and selected failed cuts can be retried. Added a Node regression suite and an FFmpeg render smoke test. |
 
 ---
 
 ## Maintenance & workflow
+
+### Gameplay workflow rollout
+
+The goal is to take a local OBS, capture-card, or console recording from import to a reviewed gameplay short. ShortForge will retain full-coverage scene splitting and add manual and automatically suggested highlights. The desktop app and optional local MCP server will share the analysis and rendering services.
+
+| Phase | Changes | Verification before publishing |
+|---|---|---|
+| 1. Reliable cuts and exports | Enforce clip length bounds where feasible while preserving coverage. Show per-clip outcomes, retain successful output, retry failures, and stop scheduling exports on cancellation. | Test tail redistribution, infeasible length ranges and tiny inputs. Exercise partial and total render failure, retries, cancellation, and export collisions. Run the regression suite and Windows packaging check. |
+| 2. Gameplay editing | Show the plan ahead of thumbnails. Add playable source previews, manual timestamp markers, editable trims, per-clip rerendering, HUD-safe 9:16 and original 16:9 presets, crop and caption previews, and game/mic track controls. Save and resume projects. | Exercise import, playback, manual highlight, trim, save/reopen, single-clip rerender, and export. Use representative OBS MKV, phone MOV, silent clips, and timestamped TS where fixtures are available. |
+| 3. Automatic highlights | Scan local footage for motion and audio signals, group overlapping moments and retain lead-up and reaction. Show ranked, editable candidates and support finalized replay-buffer or watch-folder imports. Apply optional OpenRouter enrichment to the shortlist after disclosing what leaves the machine. | Verify detection and ranking with labeled fixtures, review false positives and retained context, and measure scan and export time. Record proxy footage results separately from GTA VI footage validation. |
+| 4. Local automation | Add a CLI and optional stdio MCP server for analysis, job status, selected rendering, and cancellation. Use per-job workspaces and local input/output directories approved in configuration. Return IDs, timestamps, and result metadata. | Test the tool protocol, concurrent jobs, local path boundaries, job cancellation, and playable outputs on Windows. |
+
+Run the relevant tests at each phase, update this guide and changelog, then commit and push the verified phase. Confirm the commit on GitHub against the local commit hash.
+
+**Phase 1 verification for 1.0.6.** All 16 tests passed in the staged source snapshot, and `npm run pack` produced the unpacked Windows app. The suite includes a generated OBS-style MKV, audio-only interval rejection, concurrent exports, cancellation, and a simulated destination without hard links. On volumes without hard links, export uses an exclusive copy and the final name can be visible while an active copy finishes.
 
 **This is a standing rule for this project:**
 

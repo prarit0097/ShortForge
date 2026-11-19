@@ -25,9 +25,10 @@ const state = {
   settings: {},
   video: null,
   segments: [],
-  clips: [],
   models: [],
   jobId: null,
+  cancelRequested: false,
+  exportAttempt: null,
   enriched: false,
 };
 
@@ -230,17 +231,22 @@ async function persistSettings() {
 
 /* ---------------- progress overlay ---------------- */
 function showProgress(title) {
+  state.cancelRequested = false;
   $('progTitle').textContent = title;
   $('barFill').style.width = '0%';
   $('progMsg').textContent = 'Starting…';
+  $('cancelBtn').disabled = false;
   $('progressOverlay').classList.remove('hidden');
 }
-function hideProgress() { $('progressOverlay').classList.add('hidden'); }
+function hideProgress() {
+  state.jobId = null;
+  $('progressOverlay').classList.add('hidden');
+}
 
 api.onProgress((d) => {
   if (d.jobId !== state.jobId) return;
   $('barFill').style.width = `${d.percent}%`;
-  $('progMsg').textContent = d.message || '';
+  if (!state.cancelRequested) $('progMsg').textContent = d.message || '';
 });
 
 /* ---------------- import ---------------- */
@@ -254,7 +260,7 @@ async function addVideo() {
 function selectVideo(meta) {
   state.video = meta;
   state.segments = [];
-  state.clips = [];
+  state.exportAttempt = null;
   state.enriched = false;
 
   $('dropzone').classList.add('hidden');
@@ -281,8 +287,9 @@ async function analyze() {
   showProgress('Analyzing video');
   try {
     const res = await api.analyze({ filePath: state.video.path, settings: gatherSettings(), jobId });
-    if (res.cancelled) { hideProgress(); return; }
+    if (res.cancelled) { toast('Analysis cancelled.'); return; }
     state.segments = res.segments;
+    state.exportAttempt = null;
     state.enriched = false;
     renderResults(res);
     setStep(3, 3);
@@ -300,9 +307,9 @@ function renderResults(res) {
   $('summary').innerHTML = `
     <div class="big-num">${state.segments.length} shorts</div>
     <div class="meta">from ${fmtDuration(totalDur)} • ${res ? res.sceneCount : '—'} scene changes •
-      full coverage, nothing skipped</div>`;
-  $('downloadBtn').classList.add('hidden');
-  $('processBtn').classList.remove('hidden');
+      full coverage, nothing skipped</div>
+    <div class="meta" id="renderStatus" aria-live="polite"></div>
+    <div class="meta" id="exportStatus" aria-live="polite"></div>`;
   renderClips();
   updateSelCount();
   $('resultsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -313,6 +320,24 @@ function scoreClass(v) {
   if (v >= 70) return 'score-hi';
   if (v >= 45) return 'score-mid';
   return 'score-lo';
+}
+
+function showBatchStatus(id, message, failures = []) {
+  const status = $(id);
+  status.textContent = message;
+  if (!failures.length) return;
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Error details';
+  details.appendChild(summary);
+  const list = document.createElement('ul');
+  for (const { index, error } of failures) {
+    const item = document.createElement('li');
+    item.textContent = `Short ${index + 1}: ${error}`;
+    list.appendChild(item);
+  }
+  details.appendChild(list);
+  status.appendChild(details);
 }
 
 function renderClips() {
@@ -341,6 +366,8 @@ function renderClips() {
       <div class="clip-body">
         <input class="clip-title" data-i="${i}" value="${(seg.title || `Short ${i + 1}`).replace(/"/g, '&quot;')}" />
         <div class="clip-range">${fmtClock(seg.start)} → ${fmtClock(seg.end)}</div>
+        ${seg.renderStatus === 'failed' ? '<div class="clip-range">Render failed</div>' : ''}
+        ${seg.renderStatus === 'cancelled' ? '<div class="clip-range">Render cancelled</div>' : ''}
         ${tags}
         ${seg.outputPath ? `<div class="clip-actions">
             <button data-act="play" data-i="${i}">▶ Open</button>
@@ -377,8 +404,16 @@ function toggleSelect(i) {
   updateSelCount();
 }
 function updateSelCount() {
-  const n = state.segments.filter((s) => s.selected).length;
-  $('selCount').textContent = n;
+  const pending = state.segments.filter((s) => s.selected && !s.outputPath);
+  const processBtn = $('processBtn');
+  const retrying = pending.length > 0 && pending.every((s) => s.renderStatus);
+  processBtn.firstChild.nodeValue = retrying ? '↻ Retry processing (' : '▶ Start processing (';
+  $('selCount').textContent = pending.length;
+  processBtn.classList.toggle('hidden', state.segments.every((s) => s.outputPath));
+  processBtn.disabled = !pending.length;
+  const downloadBtn = $('downloadBtn');
+  downloadBtn.classList.toggle('hidden', !state.segments.some((s) => s.outputPath));
+  downloadBtn.disabled = !state.segments.some((s) => s.selected && s.outputPath);
 }
 
 /* ---------------- AI enrich ---------------- */
@@ -390,7 +425,7 @@ async function enrich() {
   showProgress('Enhancing with AI');
   try {
     const res = await api.enrich({ filePath: state.video.path, segments: state.segments, settings: gatherSettings(), jobId });
-    if (res.cancelled) { hideProgress(); return; }
+    if (res.cancelled) { toast('AI enrichment cancelled.'); return; }
     state.segments = res.segments;
     state.enriched = true;
     renderClips();
@@ -404,8 +439,8 @@ async function enrich() {
 
 /* ---------------- process ---------------- */
 async function process() {
-  let selected = state.segments.filter((s) => s.selected);
-  if (!selected.length) { toast('Select at least one short.', 'err'); return; }
+  let selected = state.segments.filter((s) => s.selected && !s.outputPath);
+  if (!selected.length) { toast('Select at least one short to process.', 'err'); return; }
 
   // If the AI layer is on but clips haven't been enhanced yet, do it now so the AI
   // titles/scores/crop actually drive the output (otherwise AI-on == AI-off).
@@ -417,7 +452,7 @@ async function process() {
     }
     await enrich();
     if (!state.enriched) return; // enrichment failed/cancelled; abort processing
-    selected = state.segments.filter((s) => s.selected);
+    selected = state.segments.filter((s) => s.selected && !s.outputPath);
   }
 
   await persistSettings();
@@ -425,20 +460,32 @@ async function process() {
   showProgress(`Cutting ${selected.length} shorts`);
   try {
     const res = await api.process({ filePath: state.video.path, segments: selected, settings: gatherSettings(), jobId });
-    if (res.cancelled) { hideProgress(); return; }
-    // Merge output paths back into segments.
-    const byIndex = new Map(res.clips.map((c) => [c.index, c]));
-    state.segments = state.segments.map((s) => (byIndex.has(s.index) ? { ...s, ...byIndex.get(s.index) } : s));
-    state.clips = res.clips;
+    const results = res.results || selected.map(({ index }) => ({ index, status: 'cancelled' }));
+    const byIndex = new Map(results.map((result) => [result.index, result]));
+    state.segments = state.segments.map((seg) => {
+      const result = byIndex.get(seg.index);
+      if (!result) return seg;
+      const renderStatus = result.status;
+      return renderStatus === 'ready'
+        ? { ...seg, renderStatus, outputPath: result.outputPath, fileName: result.fileName }
+        : { ...seg, renderStatus };
+    });
     renderClips();
-    $('processBtn').classList.add('hidden');
-    $('downloadBtn').classList.remove('hidden');
-    setStep(5, 5);
-    toast(`${res.clips.length} shorts ready — hover to preview, then download`, 'ok');
+    updateSelCount();
+    if (state.segments.some((seg) => seg.outputPath)) setStep(5, 5);
+    const ready = results.filter((result) => result.status === 'ready').length;
+    const failures = results.filter((result) => result.status === 'failed');
+    const cancelled = results.filter((result) => result.status === 'cancelled').length;
+    const message = `${ready}/${selected.length} shorts rendered` +
+      (failures.length ? ` • ${failures.length} failed` : '') +
+      (cancelled ? ` • ${cancelled} cancelled` : '');
+    showBatchStatus('renderStatus', message, failures);
+    toast(message, failures.length ? 'err' : cancelled ? '' : 'ok');
     if (res.captionsSkipped) {
       toast('Captions were requested but no transcript was available (needs AI Layer + Whisper installed) — shorts were cut without captions.', 'err');
     }
   } catch (err) {
+    showBatchStatus('renderStatus', `Processing failed. ${err.message}`);
     toast(`Processing failed: ${err.message}`, 'err');
   } finally {
     hideProgress();
@@ -447,21 +494,42 @@ async function process() {
 
 /* ---------------- export ---------------- */
 async function batchDownload() {
-  const selectedClips = state.segments.filter((s) => s.selected && s.outputPath);
+  let selectedClips = state.segments.filter((s) => s.selected && s.outputPath);
   if (!selectedClips.length) { toast('Select processed shorts to download.', 'err'); return; }
   const dest = await api.pickFolder();
   if (!dest) return;
+  const attempt = state.exportAttempt?.dest === dest
+    ? state.exportAttempt
+    : { dest, saved: new Set(), pending: new Set() };
+  selectedClips = selectedClips.filter((seg) => !attempt.saved.has(seg.outputPath));
+  if (!selectedClips.length) { toast('These shorts were already exported to this folder.'); return; }
   const jobId = newJobId();
   showProgress(`Downloading ${selectedClips.length} shorts`);
   try {
     const res = await api.exportClips({
-      clips: selectedClips.map((s) => ({ outputPath: s.outputPath, fileName: s.fileName })),
+      clips: selectedClips.map((s) => ({ index: s.index, outputPath: s.outputPath, fileName: s.fileName })),
       destDir: dest, settings: gatherSettings(), jobId,
     });
-    const ok = res.results.filter((r) => r.ok).length;
-    toast(`Downloaded ${ok}/${res.results.length} shorts to your folder`, 'ok');
-    api.openPath(dest);
+    const ready = res.results.filter((result) => result.status === 'ready');
+    const failures = res.results.filter((result) => result.status === 'failed');
+    const cancelled = res.results.filter((result) => result.status === 'cancelled').length;
+    for (const result of res.results) {
+      if (result.status === 'ready') {
+        attempt.saved.add(result.outputPath);
+        attempt.pending.delete(result.outputPath);
+      } else {
+        attempt.pending.add(result.outputPath);
+      }
+    }
+    state.exportAttempt = attempt.pending.size ? attempt : null;
+    const message = `${ready.length}/${selectedClips.length} shorts exported` +
+      (failures.length ? ` • ${failures.length} failed` : '') +
+      (cancelled ? ` • ${cancelled} cancelled` : '');
+    showBatchStatus('exportStatus', message, failures);
+    toast(message, failures.length ? 'err' : cancelled ? '' : 'ok');
+    if (ready.length) api.openPath(dest);
   } catch (err) {
+    showBatchStatus('exportStatus', `Export failed. ${err.message}`);
     toast(`Download failed: ${err.message}`, 'err');
   } finally {
     hideProgress();
@@ -560,7 +628,21 @@ function wire() {
     if (sel) ensureOption(sel, a.dataset.pick);
   });
 
-  $('cancelBtn').addEventListener('click', async () => { if (state.jobId) await api.cancel(state.jobId); hideProgress(); toast('Cancelled', ''); });
+  $('cancelBtn').addEventListener('click', async () => {
+    if (!state.jobId || state.cancelRequested) return;
+    const jobId = state.jobId;
+    state.cancelRequested = true;
+    $('cancelBtn').disabled = true;
+    $('progMsg').textContent = 'Cancelling…';
+    try {
+      await api.cancel(jobId);
+    } catch (err) {
+      if (state.jobId !== jobId) return;
+      state.cancelRequested = false;
+      $('cancelBtn').disabled = false;
+      $('progMsg').textContent = `Could not cancel. ${err.message}`;
+    }
+  });
 }
 
 function syncBand() {

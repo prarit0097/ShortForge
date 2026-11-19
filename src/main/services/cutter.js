@@ -114,8 +114,9 @@ function buildFilterComplex(o) {
 async function cutClip(filePath, seg, outPath, options) {
   const { hwAccel, hasAudio } = options;
   const { vargs, audioBitrate } = await encoderArgs(hwAccel, options.quality);
+  if (options.jobId && jobs.isCancelled(options.jobId)) throw new jobs.CancelledError();
 
-  const args = ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats'];
+  const args = ['-hide_banner', '-y', '-progress', 'pipe:1', '-nostats', '-abort_on', 'empty_output'];
   // Fast + accurate: input seeking before -i, re-encode trims precisely from prior keyframe.
   args.push('-ss', String(seg.start), '-to', String(seg.end), '-i', filePath);
 
@@ -140,11 +141,15 @@ async function cutClip(filePath, seg, outPath, options) {
   else args.push('-an');
   args.push('-movflags', '+faststart', outPath);
 
-  await runFfmpeg(args, {
+  const { stdout } = await runFfmpeg(args, {
     jobId: options.jobId,
     totalDurationSec: seg.duration,
     onProgress: options.onClipProgress,
   });
+  const lastFrameReport = stdout.match(/^frame=[ \t]*\d+[ \t\r]*$/gm)?.pop();
+  if (Number(lastFrameReport?.slice('frame='.length) || 0) <= 0) {
+    throw new Error('FFmpeg wrote no video frames in this clip.');
+  }
   return outPath;
 }
 
@@ -153,9 +158,14 @@ async function cutClip(filePath, seg, outPath, options) {
  * into an overall percentage so the bar always moves, and honours cancellation.
  */
 async function cutAll(filePath, segments, workDir, options) {
-  fs.mkdirSync(workDir, { recursive: true });
   const total = segments.length;
-  const results = new Array(total);
+  const results = segments.map(({ index }) => ({ index, status: 'cancelled' }));
+  const isCancelled = () => options.jobId && jobs.isCancelled(options.jobId);
+  if (!total || isCancelled()) return results;
+
+  // Each attempt owns a fresh directory so a retry cannot overwrite a prior render.
+  await fs.promises.mkdir(workDir, { recursive: true });
+  const batchDir = await fs.promises.mkdtemp(path.join(workDir, 'render-'));
   const frac = new Array(total).fill(0);
   let completed = 0;
   const concurrency = Math.max(1, Math.min(options.concurrency || 2, total));
@@ -168,34 +178,40 @@ async function cutAll(filePath, segments, workDir, options) {
 
   let next = 0;
   async function worker() {
-    while (next < total) {
+    while (next < total && !isCancelled()) {
       const i = next++;
-      if (options.jobId && jobs.isCancelled(options.jobId)) return;
       const seg = segments[i];
       const base = sanitize(seg.title || `short_${String(seg.index + 1).padStart(3, '0')}`);
-      const outPath = path.join(workDir, `${String(seg.index + 1).padStart(3, '0')}_${base}.mp4`);
+      const fileName = `${String(seg.index + 1).padStart(3, '0')}_${base}.mp4`;
+      const outPath = path.join(batchDir, fileName);
+      const tempPath = path.join(batchDir, `.${i}.part.mp4`);
       try {
-        // eslint-disable-next-line no-await-in-loop
-        await cutClip(filePath, seg, outPath, {
+        await cutClip(filePath, seg, tempPath, {
           ...options,
           onClipProgress: (clipPct) => { frac[i] = Math.min(1, clipPct / 100); report(); },
         });
-        frac[i] = 1;
-        completed += 1;
-        results[i] = { ...seg, outputPath: outPath, fileName: path.basename(outPath) };
-        report();
+        if (isCancelled()) return;
+        await fs.promises.rename(tempPath, outPath);
+        results[i] = { index: seg.index, status: 'ready', outputPath: outPath, fileName };
       } catch (err) {
-        if (err && err.isCancelled) return;
-        frac[i] = 1;
-        completed += 1;
-        results[i] = null;
-        report();
+        if (err.isCancelled || isCancelled()) return;
+        results[i] = { index: seg.index, status: 'failed', error: err.message };
+      } finally {
+        if (results[i].status !== 'ready') {
+          await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+        }
       }
+      frac[i] = 1;
+      completed += 1;
+      report();
     }
   }
 
   await Promise.all(Array.from({ length: concurrency }, worker));
-  return results.filter(Boolean);
+  if (!results.some((result) => result.status === 'ready')) {
+    await fs.promises.rmdir(batchDir).catch(() => {});
+  }
+  return results;
 }
 
 module.exports = { cutAll, cutClip, buildFilterComplex };

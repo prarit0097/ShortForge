@@ -1,69 +1,67 @@
 'use strict';
 
-/**
- * Builds FULL-COVERAGE segments from scene-change timestamps.
- *
- * Guarantees: consecutive [start,end] pairs that cover 0 -> duration with no gaps
- * and no overlaps. Each segment snaps to a real scene boundary when one exists inside
- * the allowed length band, otherwise it hard-splits at maxLength. The final remainder
- * (if shorter than minLength) is merged into the previous segment so nothing is dropped.
- */
-
 function buildSegments(sceneTimes, duration, opts = {}) {
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+
   const target = Math.max(1, opts.targetLengthSec || 30);
   const min = Math.max(1, opts.minLengthSec || 20);
   const max = Math.max(min, opts.maxLengthSec || 50);
-
-  // Candidate cut points: 0, every scene change inside the video, and the end.
-  const boundaries = [0, ...sceneTimes.filter((t) => t > 0 && t < duration), duration];
-  const sorted = [...new Set(boundaries)].sort((a, b) => a - b);
-
+  const epsilon = 8 * Number.EPSILON * Math.max(1, duration);
   const segments = [];
   let start = 0;
 
-  while (start < duration - 0.05) {
-    const ideal = start + target;
-    const lo = start + min;
-    const hi = start + max;
+  function append(end) {
+    segments.push({ index: segments.length, start, end, duration: end - start });
+    start = end;
+  }
 
-    // Scene boundaries that fall inside the allowed [min,max] band for this segment.
-    const inBand = sorted.filter((b) => b >= lo && b <= hi);
+  // At least one whole clip count must satisfy both length bounds.
+  function canCover(seconds) {
+    if (seconds === 0) return true;
+    const fewestClips = Math.max(1, Math.ceil((seconds - epsilon) / max));
+    return fewestClips <= Math.floor((seconds + epsilon) / min);
+  }
+
+  if (!canCover(duration)) {
+    // Spread the shortfall across the fewest clips that respect the maximum.
+    const count = Math.ceil((duration - epsilon) / max);
+    for (let i = 1; i < count; i++) append((duration / count) * i);
+    append(duration);
+    return segments;
+  }
+
+  const boundaries = [...new Set(sceneTimes.filter((time) => time > 0 && time < duration))]
+    .sort((a, b) => a - b);
+  boundaries.push(duration);
+  let firstInBand = 0;
+
+  while (start < duration) {
+    const ideal = start + target;
+    const low = start + min - epsilon;
+    const high = start + max;
+    while (boundaries[firstInBand] < low) firstInBand++;
 
     let cut;
-    if (inBand.length) {
-      // Pick the boundary closest to the ideal target length.
-      cut = inBand.reduce((best, b) =>
-        Math.abs(b - ideal) < Math.abs(best - ideal) ? b : best
-      );
-    } else {
-      // No scene boundary in band -> hard split at max (never exceed the cap).
-      cut = Math.min(hi, duration);
+    let closestDistance = Infinity;
+    for (let i = firstInBand; i < boundaries.length && boundaries[i] <= high + epsilon; i++) {
+      const boundary = boundaries[i];
+      const distance = Math.abs(boundary - ideal);
+      if (distance >= closestDistance) break;
+      if (canCover(duration - boundary)) {
+        cut = boundary;
+        closestDistance = distance;
+      }
     }
 
-    if (cut >= duration - 0.05) {
-      cut = duration;
+    if (cut === undefined) {
+      // Reserve the minimum for the smallest number of trailing clips that can fit.
+      const trailingClips = Math.max(0, Math.ceil((duration - high - epsilon) / max));
+      cut = trailingClips === 0 ? duration : Math.min(high, duration - trailingClips * min);
     }
-
-    segments.push({ start: +start.toFixed(3), end: +cut.toFixed(3) });
-    start = cut;
+    append(cut);
   }
 
-  // Merge a too-short tail into the previous segment so coverage stays 100%.
-  if (segments.length >= 2) {
-    const last = segments[segments.length - 1];
-    if (last.end - last.start < min) {
-      const prev = segments[segments.length - 2];
-      prev.end = last.end;
-      segments.pop();
-    }
-  }
-
-  return segments.map((s, i) => ({
-    index: i,
-    start: s.start,
-    end: s.end,
-    duration: +(s.end - s.start).toFixed(3),
-  }));
+  return segments;
 }
 
 module.exports = { buildSegments };

@@ -59,9 +59,10 @@ Produces an NSIS installer in `dist/`. (Add `build/icon.ico` for a custom icon.)
 1. **Scene detection** — FFmpeg scene filter finds every scene-change timestamp (tunable sensitivity).
    For very large files, a fast keyframe-only scan is available.
 2. **Full-coverage segmentation** — starting at 0, each segment extends toward your *target* length and
-   snaps to the nearest scene boundary inside your *min–max* band. If no boundary falls in range it
-   hard-splits at *max*. The final short tail is merged into the previous clip. Result: the entire
-   video from `0 → end` is covered with no gaps or overlaps.
+   snaps to the nearest scene boundary that leaves enough time for the remaining clips. With no
+   qualifying boundary, it cuts at the latest time that still fits. If both length bounds are
+   impossible, it favors the maximum and shares the remaining time evenly. The plan covers the
+   entire video from `0 → end` with no gaps or overlaps.
 3. **Cutting** — each segment is re-encoded with frame-accurate seeking (so cuts are exact), reframed
    to your chosen ratio, optionally captioned, using hardware acceleration when available.
 
@@ -105,6 +106,8 @@ src/
 - Your OpenRouter API key is stored **encrypted at rest** (Windows DPAPI via Electron `safeStorage`)
   and is only ever used from the main process — it never reaches the renderer.
 - Working files (thumbnails, cut clips) live under your user-data folder until you export them.
+- Failed renders can be retried from the results list. Successful renders are available for export.
+- Run `npm test` for the regression tests.
 
 ## License
 
